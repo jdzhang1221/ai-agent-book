@@ -58,11 +58,11 @@
 | 2 | 🎯 **上下文工程** | 上下文决定能力上限：KV Cache、提示工程、Agent Skills、上下文压缩 | [读](book/chapter2.md) | [9](chapter2/README.md) |
 | 3 | 📚 **用户记忆和知识库** | 跨会话记住用户、接入外部知识：用户记忆、RAG、结构化索引、知识图谱 | [读](book/chapter3.md) | [13](chapter3/README.md) |
 | 4 | 🛠️ **工具** | 工具是 Agent 的双手：MCP 协议、感知/执行/协作三类工具、事件驱动异步 Agent、主动工具发现 | [读](book/chapter4.md) | [7](chapter4/README.md) |
-| 5 | 💻 **Coding Agent 与代码生成** | 代码是「能创造新工具的工具」，生产级 Coding Agent 全景 | [读](book/chapter5.md) | [12](chapter5/README.md) |
-| 6 | 🎯 **Agent 的评估** | 把表现变成可比较信号：评估环境、指标、统计显著性、评估驱动选型 | [读](book/chapter6.md) | [12](chapter6/README.md) |
+| 5 | 💻 **Coding Agent 与代码生成** | 代码是「能创造新工具的工具」，生产级 Coding Agent 全景 | [读](book/chapter5.md) | [13](chapter5/README.md) |
+| 6 | 🎯 **Agent 的评估** | 把表现变成可比较信号：评估环境、指标、统计显著性、评估驱动选型 | [读](book/chapter6.md) | [13](chapter6/README.md) |
 | 7 | 🧠 **模型后训练** | 预训练/SFT/RL 三阶段：何时选 SFT、何时选 RL，工具调用内化、样本效率 | [读](book/chapter7.md) | [16](chapter7/README.md) |
 | 8 | 🔄 **Agent 的持续进化** | 从运行轨迹获得学习信号，更新知识、指令、程序与参数 | [读](book/chapter8.md) | [9](chapter8/README.md) |
-| 9 | 🎙️ **多模态与实时交互** | 从文本扩展到语音、GUI、物理世界：语音三范式、Computer Use、机器人 | [读](book/chapter9.md) | [10](chapter9/README.md) |
+| 9 | 🎙️ **多模态与实时交互** | 从文本扩展到语音、GUI、物理世界：语音三范式、Computer Use、机器人 | [读](book/chapter9.md) | [12](chapter9/README.md) |
 | 10 | 🤝 **多 Agent 协作** | 群体智能高于个体：协作框架、上下文共享/隔离、涌现的「Agent 社会」 | [读](book/chapter10.md) | [8](chapter10/README.md) |
 
 > 💡 **读** = 在 GitHub 网页直接读章节正文（markdown）；**N** = 该章配套项目数，点击查看代码。项目类型说明（✅ 可运行 / 📖 复现 / 🚧 设计）见各章 README。
@@ -139,26 +139,26 @@ git clone https://github.com/bojieli/minimind.git chapter7/MiniMind-pretrain/min
 git clone https://github.com/bojieli/minimind-v.git chapter7/MiniMind-pretrain/minimind-v && git -C chapter7/MiniMind-pretrain/minimind-v fetch origin ead791c530fa5f9a3549dbfe9e11ec732d18d2e5 && git -C chapter7/MiniMind-pretrain/minimind-v checkout --detach ead791c530fa5f9a3549dbfe9e11ec732d18d2e5 && test "$(git -C chapter7/MiniMind-pretrain/minimind-v rev-parse HEAD)" = "ead791c530fa5f9a3549dbfe9e11ec732d18d2e5"  # 实验 7-4
 git clone https://github.com/bojieli/AdaptThink.git chapter7/AdaptThink-original && git -C chapter7/AdaptThink-original checkout --detach 0033ad172dd53ac64004b763477407014f21b838  # 实验 7-10
 git clone https://github.com/bojieli/SFTvsRL.git chapter7/SFTvsRL && git -C chapter7/SFTvsRL checkout --detach fef0a4a3367260a0934be1e40b01e4021698e023  # 实验 7-11、7-12
-git clone https://github.com/bojieli/AWorld.git chapter7/AWorld && git -C chapter7/AWorld checkout --detach a52d61d6d483e66b22ef16970eae5bbf4f4ab2ec  # 实验 7-16
-git clone https://github.com/bojieli/verl.git chapter7/verl && git -C chapter7/verl checkout --detach 1593fc3a8cf894debdc3dece2a23ed739c282789  # 实验 7-15 ReTool 配方；7-16 训练后端
-git clone https://github.com/bojieli/SandboxFusion.git chapter7/SandboxFusion && git -C chapter7/SandboxFusion fetch origin 4a0d573ebd64c98234c190a9d1d49e4276199a0c && git -C chapter7/SandboxFusion checkout --detach 4a0d573ebd64c98234c190a9d1d49e4276199a0c && test "$(git -C chapter7/SandboxFusion rev-parse HEAD)" = "4a0d573ebd64c98234c190a9d1d49e4276199a0c"  # 实验 7-15 代码沙箱
+git clone https://github.com/bojieli/AWorld.git chapter7/AWorld && git -C chapter7/AWorld checkout --detach a52d61d6d483e66b22ef16970eae5bbf4f4ab2ec  # 实验 7-15
+git clone https://github.com/bojieli/verl.git chapter7/verl && git -C chapter7/verl checkout --detach 1593fc3a8cf894debdc3dece2a23ed739c282789  # 实验 7-14 ReTool 配方；7-15 训练后端
+git clone https://github.com/bojieli/SandboxFusion.git chapter7/SandboxFusion && git -C chapter7/SandboxFusion fetch origin 4a0d573ebd64c98234c190a9d1d49e4276199a0c && git -C chapter7/SandboxFusion checkout --detach 4a0d573ebd64c98234c190a9d1d49e4276199a0c && test "$(git -C chapter7/SandboxFusion rev-parse HEAD)" = "4a0d573ebd64c98234c190a9d1d49e4276199a0c"  # 实验 7-14 代码沙箱
 git clone https://github.com/thinking-machines-lab/tinker-cookbook.git chapter7/tinker-cookbook && git -C chapter7/tinker-cookbook checkout --detach fc8449187041cf102905f3f751e6d2eac7f9f754
-git clone https://github.com/19PINE-AI/rlvp.git chapter7/RLVP/rlvp && git -C chapter7/RLVP/rlvp fetch origin 1ad30bc7e338911fb733739393d92c420f4d8bee && git -C chapter7/RLVP/rlvp checkout --detach 1ad30bc7e338911fb733739393d92c420f4d8bee && test "$(git -C chapter7/RLVP/rlvp rev-parse HEAD)" = "1ad30bc7e338911fb733739393d92c420f4d8bee"  # 实验 7-14
+git clone https://github.com/19PINE-AI/rlvp.git chapter7/RLVP/rlvp && git -C chapter7/RLVP/rlvp fetch origin 1ad30bc7e338911fb733739393d92c420f4d8bee && git -C chapter7/RLVP/rlvp checkout --detach 1ad30bc7e338911fb733739393d92c420f4d8bee && test "$(git -C chapter7/RLVP/rlvp rev-parse HEAD)" = "1ad30bc7e338911fb733739393d92c420f4d8bee"  # 实验 7-16
 git clone https://github.com/PRIME-RL/SimpleVLA-RL.git chapter7/SimpleVLA-RL/SimpleVLA-RL && git -C chapter7/SimpleVLA-RL/SimpleVLA-RL checkout --detach 7c51662df27b586f9e8a1ab35fcf849f2b8852f9  # 实验 7-13
 
 # 第 9 章 · GUI 与机器人外部复现轨道
-git clone https://github.com/anthropics/claude-quickstarts.git chapter9/claude-quickstarts && git -C chapter9/claude-quickstarts checkout --detach 9bcc95e316e5ef6542b4c9d0469f4078829eead5  # 实验 9-6 使用 computer-use-demo/
-git clone https://github.com/browser-use/browser-use.git chapter9/browser-use && git -C chapter9/browser-use checkout --detach ec9277c5001f2cb78ee419c927775a3cfc227ff8  # 实验 9-7
-git clone https://github.com/Vector-Wangel/XLeRobot.git chapter9/XLeRobot && git -C chapter9/XLeRobot fetch origin 3d14695e40c9c68229c0aacffca6053c75cd3eb6 && git -C chapter9/XLeRobot checkout --detach 3d14695e40c9c68229c0aacffca6053c75cd3eb6 && test "$(git -C chapter9/XLeRobot rev-parse HEAD)" = "3d14695e40c9c68229c0aacffca6053c75cd3eb6"  # 实验 9-8、9-9 共用
-git clone https://github.com/Grigorij-Dudnik/RoboCrew.git chapter9/RoboCrew && git -C chapter9/RoboCrew fetch origin c749148f29bd14e61347f9fc3530c343fff0d994 && git -C chapter9/RoboCrew checkout --detach c749148f29bd14e61347f9fc3530c343fff0d994 && test "$(git -C chapter9/RoboCrew rev-parse HEAD)" = "c749148f29bd14e61347f9fc3530c343fff0d994"  # 实验 9-9；RoboCrew v0.3.1
-git clone https://github.com/StoneT2000/lerobot-sim2real.git chapter9/lerobot-sim2real && git -C chapter9/lerobot-sim2real fetch origin 87d6c1d969f6e0ca4dc5697940804e231118a63a && git -C chapter9/lerobot-sim2real checkout --detach 87d6c1d969f6e0ca4dc5697940804e231118a63a && test "$(git -C chapter9/lerobot-sim2real rev-parse HEAD)" = "87d6c1d969f6e0ca4dc5697940804e231118a63a"  # 实验 9-10
+git clone https://github.com/anthropics/claude-quickstarts.git chapter9/claude-quickstarts && git -C chapter9/claude-quickstarts checkout --detach 9bcc95e316e5ef6542b4c9d0469f4078829eead5  # 实验 9-5 使用 computer-use-demo/
+git clone https://github.com/browser-use/browser-use.git chapter9/browser-use && git -C chapter9/browser-use checkout --detach ec9277c5001f2cb78ee419c927775a3cfc227ff8  # 实验 9-6
+git clone https://github.com/Vector-Wangel/XLeRobot.git chapter9/XLeRobot && git -C chapter9/XLeRobot fetch origin 3d14695e40c9c68229c0aacffca6053c75cd3eb6 && git -C chapter9/XLeRobot checkout --detach 3d14695e40c9c68229c0aacffca6053c75cd3eb6 && test "$(git -C chapter9/XLeRobot rev-parse HEAD)" = "3d14695e40c9c68229c0aacffca6053c75cd3eb6"  # 实验 9-7、9-9 共用
+git clone https://github.com/Grigorij-Dudnik/RoboCrew.git chapter9/RoboCrew && git -C chapter9/RoboCrew fetch origin c749148f29bd14e61347f9fc3530c343fff0d994 && git -C chapter9/RoboCrew checkout --detach c749148f29bd14e61347f9fc3530c343fff0d994 && test "$(git -C chapter9/RoboCrew rev-parse HEAD)" = "c749148f29bd14e61347f9fc3530c343fff0d994"  # 实验 9-8、9-9；RoboCrew v0.3.1
+git clone https://github.com/StoneT2000/lerobot-sim2real.git chapter9/lerobot-sim2real && git -C chapter9/lerobot-sim2real fetch origin 87d6c1d969f6e0ca4dc5697940804e231118a63a && git -C chapter9/lerobot-sim2real checkout --detach 87d6c1d969f6e0ca4dc5697940804e231118a63a && test "$(git -C chapter9/lerobot-sim2real rev-parse HEAD)" = "87d6c1d969f6e0ca4dc5697940804e231118a63a"  # 实验 9-11
 
 # 第 10 章 · 双 Agent 架构（已独立为 TalkAct 项目）+ 斯坦福 AI 小镇
 git clone https://github.com/19PINE-AI/TalkAct.git chapter10/use-computer-while-calling && git -C chapter10/use-computer-while-calling fetch origin 7d70007f72d45ddfc1a14e8e229b6d444e4919a2 && git -C chapter10/use-computer-while-calling checkout --detach 7d70007f72d45ddfc1a14e8e229b6d444e4919a2 && test "$(git -C chapter10/use-computer-while-calling rev-parse HEAD)" = "7d70007f72d45ddfc1a14e8e229b6d444e4919a2"  # 实验 10-4
 git clone https://github.com/joonspk-research/generative_agents.git chapter10/generative_agents && git -C chapter10/generative_agents fetch origin fe05a71d3e4ed7d10bf68aa4eda6dd995ec070f4 && git -C chapter10/generative_agents checkout --detach fe05a71d3e4ed7d10bf68aa4eda6dd995ec070f4 && test "$(git -C chapter10/generative_agents rev-parse HEAD)" = "fe05a71d3e4ed7d10bf68aa4eda6dd995ec070f4"  # 实验 10-7
 ```
 
-> 上述九个当前缺失的 checkout（7-3、7-4、7-14、7-15 的 SandboxFusion、9-8/9-9 共用的 XLeRobot、9-9 的 RoboCrew、9-10 的 `lerobot-sim2real`、10-4、10-7）也已固定到不可变 SHA；命令会 detached checkout 并用 `rev-parse HEAD` 做相等性校验。第 10 章 `use-computer-while-calling` 已发展为独立维护的 [19PINE-AI/TalkAct](https://github.com/19PINE-AI/TalkAct)。源码存在或安装成功都不是实验完成声明。
+> 上述九个当前缺失的 checkout（7-3、7-4、7-16、7-14 的 SandboxFusion、9-7/9-9 共用的 XLeRobot、9-8/9-9 的 RoboCrew、9-11 的 `lerobot-sim2real`、10-4、10-7）也已固定到不可变 SHA；命令会 detached checkout 并用 `rev-parse HEAD` 做相等性校验。第 10 章 `use-computer-while-calling` 已发展为独立维护的 [19PINE-AI/TalkAct](https://github.com/19PINE-AI/TalkAct)。源码存在或安装成功都不是实验完成声明。
 
 </details>
 

@@ -20,9 +20,12 @@
 | 7-11 | `SFTvsRL/` | 📖 | Membandingkan memori dan generalisasi SFT dengan RL pada anggaran yang sama. |
 | 7-12 | [SpatialReasoning](SpatialReasoning/) · `SFTvsRL/` | 📖 | Melatih serta mengevaluasi spatial reasoning ID dan OOD. |
 | 7-13 | [SimpleVLA-RL](SimpleVLA-RL/) · `SimpleVLA-RL/SimpleVLA-RL/` | 📖 | Menggabungkan visi, bahasa, dan tindakan dalam pelatihan RL. |
-| 7-14 | [RLVP](RLVP/) · `RLVP/rlvp/` | 📖 | Mereproduksi riset RLVP: memberi reward pada hasil dan penalti pada jalur. |
-| 7-15 | [retool](retool/) · `verl/` · `SandboxFusion/` | 📖 | Melatih penggunaan code interpreter dengan backend veRL dan sandbox eksekusi. |
-| 7-16 | [AWorld-train](AWorld-train/) · `AWorld/` | 📖 | Melatih Agent menggunakan tool pada lingkungan GAIA berbasis AWorld. |
+| 7-14 | [retool](retool/) · `verl/` · `SandboxFusion/` | 📖 | Melatih penggunaan code interpreter dengan backend veRL dan sandbox eksekusi. |
+| 7-15 | [AWorld-train](AWorld-train/) · `AWorld/` | 📖 | Melatih Agent menggunakan tool pada lingkungan GAIA berbasis AWorld. |
+| 7-16 | [RLVP](RLVP/) · `RLVP/rlvp/` | 📖 | Mereproduksi riset RLVP: memberi reward pada hasil dan penalti pada jalur. |
+| 7-17 | [premature-completion-dpo](premature-completion-dpo/) | ✅ | Perbaikan DPO bad case penyelesaian prematur di GPU. |
+| 7-18 | [curly-quote-sft](curly-quote-sft/) | ✅ | SFT tanda kutip lengkung Tionghoa berbasis cakupan yang diaudit: 1.024/256/256 data train/holdout/batas, 10 jenis artikel dan 9 bahasa pemrograman; Qwen3-8B mencapai exact 96,9%/97,7% dan preservasi area terlindungi 100% di GPU. |
+| 7-19 | [exact-copy-sft](exact-copy-sft/) | ✅ | SFT penyalinan string khusus byte-exact yang diaudit: 1.024/256/256 data; Qwen3-8B mencapai holdout 78,9% dan batas 80,1%, dengan audit tokenizer Qwen3/Qwen2.5/Mistral. |
 | — | `verl/` | 📖 | Framework RLHF efisien untuk PPO, GRPO, DAPO, dan algoritme lain. |
 | — | [Intuitor](Intuitor/) | ✅ | Melatih penalaran intuitif tanpa chain-of-thought panjang. |
 | — | `tinker-cookbook/` | 📖 | Kumpulan resep dan praktik terbaik pelatihan model. |

@@ -1,4 +1,4 @@
-"""实验 4-5 命令行入口：带并行执行、打断/取消与状态管理的异步 Agent。
+"""实验 4-6 命令行入口：带并行执行、打断/取消与状态管理的异步 Agent。
 
 本脚本提供两类演示，用子命令区分：
 
@@ -77,6 +77,15 @@ def make_client():
     """
     from openai import AsyncOpenAI  # 惰性导入：离线演示无需安装 openai
     provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    if provider in {"dashscope", "qwen", "bailian"}:
+        key = os.environ["DASHSCOPE_API_KEY"]
+        model = os.getenv("LLM_MODEL", "qwen3.7-plus")
+        base_url = os.getenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        client = AsyncOpenAI(api_key=key, base_url=base_url)
+        return client, model, _completion_params_for(model)
     if provider == "moonshot":
         key = os.environ["MOONSHOT_API_KEY"]
         # 默认用当前的推理模型 kimi-k3（旧的 kimi-k2-*-preview 与 moonshot-v1-* 均已过时/停用）。
@@ -215,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="demo.py",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="实验 4-5：带并行执行、打断/取消与状态管理的异步 Agent 演示。",
+        description="实验 4-6：带并行执行、打断/取消与状态管理的异步 Agent 演示。",
         epilog=(
             "示例：\n"
             "  python demo.py                     # 默认：依次运行三个离线演示（无需 API key）\n"

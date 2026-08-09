@@ -1,5 +1,11 @@
 # Modell poszt-tréning
 
+> **2026-os frissítés.** A fejezet pontosítja, hogy az „SFT memorizál, az RL általánosít” állítás a GeneralPoints/V-IRL kontrollált összehasonlításainak megfigyelése, nem egyetemes törvény. Különválasztja az eszközválaszok modellalapú és a teljes környezeti dinamika szimulációját is, és a szimulátor torzítását a tréning plafonjaként kezeli.
+>
+> Két, a minta-hatékonyságot javító út kap hangsúlyt: az On-Policy Distillation egy rollout végső jutalmát tokenenkénti útmutatássá alakítja, az RLVP pedig a különben elvesző útvonal-visszajelzést tanulható jellé teszi. Erősebb tanár hiányában az OPSD privilegizált információt használ, miközben ugyanaz a modell tölti be a tanár és a tanuló szerepét.
+>
+> A kísérletek sorrendje ebben a kiadásban: 7-13 SimpleVLA-RL; 7-14 ReTool; 7-15 AWorld-train; 7-16 RLVP.
+
 A könyv alapképlete: Ágens = LLM + Kontextus + Eszközök. Ez a fejezet magára az LLM-re – az "agyra" – összpontosít, és azt vizsgálja, hogy a poszt-tréning hogyan segíthet a modellnek hatékonyabban használni a kontextust és az eszközöket, ezáltal javítva az egész Ágensrendszer képességeit. A 6. fejezet vége rámutatott, hogy az értékelő rendszer és a szimulációs környezet a poszt-tréning két sarokköve: az értékelő környezet adja a gyakorlóterepet, az értékelési metrikák pedig a célt. Ez a fejezet ezekre a sarokkövekre építve tárgyalja, hogyan lehet ténylegesen megváltoztatni a modell súlyait – hogyan lehet képességeket a paraméterekbe sütni.
 
 Ez a fejezet nem feltételez semmilyen előzetes ismeretet a megerősítéses tanulásról vagy modelltréningről. Nem várjuk el, hogy ismerd a gradienseket vagy a policy-optimalizálást. Ehelyett abból a kérdésből indulunk ki, hogy hogyan tanul egy modell egyáltalán, világossá téve, hogy az egyes lépések mire valók, hogyan működnek, és milyen problémát oldanak meg. A fejezet végére képesnek kell lenned megválaszolni a következő kérdéseket: Hány szakaszból áll egy modell képességeinek kialakítása? Mit csinál az egyes szakaszok? Miért kell ebben a sorrendben történniük? És hova érdemes koncentrálnod a saját projektjeidben?
@@ -308,7 +314,7 @@ Mielőtt az SFT gyakorlati alkalmazásába kezdünk, van egy gyakorlati kérdés
 >
 > A desztilláció két dimenzió mentén végezhető el: "nagytól kicsiig" (egy nagy modell cseréje közepesre vagy kicsire a költség és minőség egyensúlyozására) és "gondolkodótól nem gondolkodóig" (explicit CoT összehajtása implicit parametrikus ismeretekké azonos méret mellett, 20-30-szoros válaszsebesség-növekedést elérve). Ez a kettő nem zárja ki egymást, és gyakran együtt használják őket termelési környezetekben. Fontos megjegyezni, hogy a desztilláció örökli a tanító határait – ha a tanítónak rendszeres hibái vannak az eloszlás hosszú farkában, a tanuló tovább rögzíti ezeket a hibákat; ha a tanító eszközökre támaszkodik a helyesség biztosításához, az egyszerű kimeneti desztilláció elveszti az eszközök által biztosított robusztusságot. Mérnöki tanulság: amikor a termékterv stabil, a bemeneti eloszlás kiszámítható, és a költségkorlátok jelentősek, a prompt desztilláció kiváló optimalizálás; a kísérletezés során vagy mielőtt a feladat stabilizálódna, az explicit gondolkodás és a szerkeszthető promptok megtartása továbbra is központi szerepet játszik a gyors iterációban.
 >
-> **7-9. kísérlet ★★★: Gondolkodási lánc (CoT) desztilláció `[Kiterjesztett kísérlet]`**
+> **7-9. kísérlet ★★★: Gondolkodási lánc (CoT) desztilláció**
 >
 > A prompt desztilláció eldobja a gondolkodási folyamatot; a CoT desztilláció az ellenkezőjét csinálja: egy erős tanító modell "teljes gondolkodási pályáját" adja át a tanuló modellnek. A CoT desztilláció egy képzett tanító modellből lehetővé teheti egy azonos paraméterszámú tanuló számára, hogy visszanyerje a tanító képességeinek 70-80%-át. Azoknak a csapatoknak, amelyek nem a legmodernebb képességek határát akarják feszegetni, hanem olyan modelleket szeretnének, amelyeket maguk irányíthatnak, ez a legpragmatikusabb követő stratégia. A DeepSeek-R1 által nyílt forráskódúvá tett desztillált kismodell-sorozat (az R1 gondolkodási pályáinak használata az SFT végrehajtásához a Qwen és Llama sorozaton) ennek a megközelítésnek a reprezentatív példája.
 >
@@ -327,6 +333,10 @@ Mielőtt az SFT gyakorlati alkalmazásába kezdünk, van egy gyakorlati kérdés
 > "Elfogadási kritériumok:" A desztillált tanuló modell jelentős javulást mutat a matematikai és kód benchmarkokon a desztilláció előtti teljesítményéhez képest, és a gondolkodási pályái olyan tanító-szerű viselkedéseket mutatnak, mint a reflektálás, visszalépés és ellenőrzés. Továbbá, ügyelj a desztilláció költségére: a tanuló örökölni fogja a tanító rendszeres hibáit és bőbeszédű gondolkodási szokásait (utóbbi tovább optimalizálható a 7-10. kísérletből származó AdaptThink megközelítéssel).
 
 Ennek a négy kísérletnek közös jellemzője – "stabil leképezések és protokollok írása a paraméterekbe": a hang SFT stílusvezérlési protokollokat rögzít, a többnyelvű SFT gondolkodásszervezési sablonokat rögzít, a desztillációs SFT pedig a bemenet-kimenet közvetlen leképezését rögzíti. Világos céljaik, tiszta formátumaik és stabil értékelési kritériumaik vannak, így az SFT rendkívül magas mintahatékonysággal tud javulást elérni; amint azonban az eloszlás eltolódik, a memorizálásra való hajlama romló teljesítményben nyilvánul meg. Ez a 7.1 szakasz "Az SFT és az RL lényegi különbsége" részében tárgyalt memória-általánosítás megoszlásának kísérleti megnyilvánulása.
+
+A 6. fejezet bad case-ei tanítási adattá alakíthatók. A túl korán befejező kódoló ügynöknél a befejezés előtti pályaelőtagot vágjuk ki: az eredeti kijelentés a rejected, a tesztfuttatás és minden elfogadási feltétel ellenőrzése utáni következtetés a chosen. Ez DPO-hoz vagy döntési határ-demonstrációhoz illik jobban, mint a sima SFT. A hibát, az alkalmazási feltételeket és az ellenőrzőt minden mintával együtt kell megőrizni.
+
+Ugyanez a feladathalmaz RL-gyakorlókörnyezetté alakítható: az SFT ellenőrzött pályákat használ, az RL pedig újra lefuttatja a feladatot, és külső ellenőrző ítéli meg az eredményt. Így a bad case javítandó döntési határ, nem pusztán memorizálandó példa.
 
 ## Mikor válassz SFT-t és mikor RL-t?
 
@@ -422,6 +432,8 @@ Ez az egyetlen képlet négy gyakori kérdést vet fel a kezdőktől, amelyeket 
 "Az RLHF és az RLVR Kapcsolata." Összefoglalva, a két megközelítés közötti különbség abban rejlik, hogy "honnan származik a jutalom": az RLHF jutalma egy tanult RM-től (emberi preferencia adatokkal alátámasztva) származik, míg az "RLVR" (Reinforcement Learning with Verifiable Rewards) egy szabályalapú ellenőrzőt használ (a teszt sikeres, a válasz helyes-e). Az Ágens feladatok történetesen többnyire verifikálhatóak – pontosan ezért összpontosít ez a fejezet az RLVR-re mint fő szálra. Azonban nem választás kérdése; a gyakorlatban telepített modellek kombinálva használják őket: az RLHF kezeli a beszélgetési minőséget és a biztonsági összehangolást, míg az RLVR az érvelési és Ágens képességeket. A későbbi "A jutalom paradigmáinak fejlődése" szakasz tárgyalja a generatív jutalommodelleket, amelyek e két vonal találkozásának tekinthetők – egy tanítható jutalommodell használata a nyitott végű feladatok kezelésére, amelyeket a szabályok nem fednek le.
 
 ## Megerősítéses tanulási algoritmusok összehasonlítása
+
+A DeepSeek által bevezetett **GRPO (Group Relative Policy Optimization)** ma az RL-tréning egyik leggyakrabban használt algoritmusa. Alapötlete, hogy külön értékhálózat tréningezése nélkül, ugyanarra a feladatra készült rolloutok csoportját összehasonlítva becsüli a relatív előnyt.
 
 A korábbi egymenetes kísérletek demonstrálták az RL általánosítási előnyét, az előző szakasz pedig bevezette az RLHF preferencia optimalizálási megközelítését. A konkrét algoritmusok, amelyeket ezek a munkák használnak, azonban változatosak, és csak egy részhalmazát képezik a sok lehetőségnek. Mielőtt a bonyolultabb többlépéses feladatokra térnénk, szükséges szisztematikusan áttekinteni a mainstream algoritmusok jellemzőit és alkalmazási forgatókönyveit.
 
@@ -534,13 +546,15 @@ Az algoritmusok nem fontosak – csak később jönnek. Az erőfeszítés éssze
 
 ## Egymenetestől a többlépésesig: Hitelkiosztás és jutalomtervezés
 
+A „korai befejezés” konkrét példa. Amikor a modell késznek mondja a feladatot, a Harness elkülönített, a modell elől rejtett munkatérben futtatja az elfogadási teszteket; csak siker esetén jár pozitív jutalom. A teszteknek valódi fájlokat vagy környezeti állapotot kell olvasniuk. A befejezetlen határkészletet és a valóban befejezett feladatok tartalékkészletét külön kell mérni.
+
 ### A többlépéses feladatok alapvető kihívása
 
 ![7-14. ábra: Az egymenetes és a többlépéses RL összehasonlítása](images/fig7-14.svg)
 
 ![7-15. ábra: Érdem-hozzárendelés többlépéses interakciókban](images/fig7-15.svg)
 
-Az egymenetestől a többlépéses felé haladás minőségi ugrást jelent a komplexitásban. Az irányelvnek nemcsak az aktuális lépéshez optimális akciót kell kiválasztania, hanem figyelembe kell vennie a jövőbeli állapot értékét is; nemcsak az azonnali visszajelzést kell kezelnie, hanem "hitelkiosztást" (Credit Assignment) is kell végeznie késleltetett jutalmak mellett – meg kell határoznia, hogy egy többlépéses szekvenciában melyik lépés járult hozzá a legtöbbet a végeredményhez. Például egy ügyfélszolgálati Ágens 10 beszélgetési forduló után megoldja a felhasználó problémáját, és pozitív értékelést kap – de ezt a pozitív értékelést a 2. forduló pontos kérdésfeltevésének vagy a 7. forduló türelmes magyarázatának kell tulajdonítani? A többlépéses feladatok egy másik kihívást is bevezetnek: "Részleges megfigyelhetőség" (Partial Observability) (az Ágens nem szerezheti meg a teljes állapotot, és a történeti megfigyelésekből kell implicit állapotreprezentációt építenie).
+Az egymenetestől a többlépéses felé haladás minőségi ugrást jelent a komplexitásban. Az irányelvnek nemcsak az aktuális lépéshez optimális akciót kell kiválasztania, hanem figyelembe kell vennie a jövőbeli állapot értékét is; nemcsak az azonnali visszajelzést kell kezelnie, hanem "hitelkiosztást" (Credit Assignment) is kell végeznie késleltetett jutalmak mellett – meg kell határoznia, hogy egy többlépéses szekvenciában melyik lépés járult hozzá a legtöbbet a végeredményhez. Például egy ügyfélszolgálati Ágens 10 beszélgetési forduló után megoldja a felhasználó problémáját, és pozitív értékelést kap – de ezt a pozitív értékelést a 2. forduló pontos kérdésfeltevésének vagy a 7. forduló türelmes magyarázatának kell tulajdonítani?
 
 Az itt tárgyalt többlépéses interakció az 1. és 4. fejezetben leírt ReAct ciklus formáját ölti: minden forduló a **Think → Act → Observe** egy iterációja, és a jutalom késleltetése abból a strukturális korlátból adódik, hogy "a végeredmény csak több forduló után ítélhető meg".
 
@@ -598,7 +612,7 @@ Ennek a módszernek több kulcsfontosságú előnye van: jól általánosít, me
 
 ### Folyamat jutalom vs. Eredmény jutalom: Kulcsfontosságú választás többlépéses feladatokhoz
 
-A hitelkiosztáson és a részleges megfigyelhetőségen túl a többlépéses feladatok a "hosszú távú függőség" problémájával is szembesülnek – a korai döntések hatása, mint a részcélorientáció vagy eszközválasztás, csak több tucat lépéssel később válhat nyilvánvalóvá. Ez egy kulcsfontosságú választást jelent a jutalomtervezésben: a "Folyamat jutalom" (Process Reward) minden lépésnél visszajelzést ad, csökkentve a hitelkiosztás nehézségét, de emberi tervezési torzítást vezet be, potenciálisan korlátozva a felfedezési teret. Az "Eredmény jutalom" (Outcome Reward) csak a végén ad visszajelzést, maximális felfedezési szabadságot biztosítva, de magasabb tréning nehézséget és mintakövetelményeket igényel. Hasonlattal élve, a folyamat jutalom olyan, mint egy tanár, aki feladatonként pontozza a házi feladatot, lehetővé téve a diáknak, hogy gyorsan tudja, hol hibázott; az eredmény jutalom olyan, mintha csak a végső vizsga jegyét néznénk, több szabadságot adva a diáknak a tanulási módszerek felfedezésében, de a visszajelzés nagyon későn érkezik. A jutalomfüggvény tervezése szorosan kapcsolódik a 6. fejezetben tárgyalt értékelő környezet építéséhez – egy kiváló minőségű automatikus értékelő környezet előfeltétele az RL tréningnek.
+A hitelkiosztáson túl a többlépéses feladatok a "hosszú távú függőség" problémájával is szembesülnek – a korai döntések hatása, mint a részcélorientáció vagy eszközválasztás, csak több tucat lépéssel később válhat nyilvánvalóvá. Ez egy kulcsfontosságú választást jelent a jutalomtervezésben: a "Folyamat jutalom" (Process Reward) minden lépésnél visszajelzést ad, csökkentve a hitelkiosztás nehézségét, de emberi tervezési torzítást vezet be, potenciálisan korlátozva a felfedezési teret. Az "Eredmény jutalom" (Outcome Reward) csak a végén ad visszajelzést, maximális felfedezési szabadságot biztosítva, de magasabb tréning nehézséget és mintakövetelményeket igényel. Hasonlattal élve, a folyamat jutalom olyan, mint egy tanár, aki feladatonként pontozza a házi feladatot, lehetővé téve a diáknak, hogy gyorsan tudja, hol hibázott; az eredmény jutalom olyan, mintha csak a végső vizsga jegyét néznénk, több szabadságot adva a diáknak a tanulási módszerek felfedezésében, de a visszajelzés nagyon későn érkezik. A jutalomfüggvény tervezése szorosan kapcsolódik a 6. fejezetben tárgyalt értékelő környezet építéséhez – egy kiváló minőségű automatikus értékelő környezet előfeltétele az RL tréningnek.
 
 Terminológiailag ez a két jutalom két típusú jutalommodellnek felel meg: a "Folyamat Jutalommodell (PRM)" az érvelés vagy végrehajtás minden köztes lépését pontozza. Egy reprezentatív munka az OpenAI "Let's Verify Step by Step"[^ch7-7] – matematikai érvelési feladatokon a lépésenkénti emberi annotációkkal tréningezett PRM-ek jelentősen felülmúlták a csak a végeredményt néző felügyeletet. Az "Eredmény Jutalommodell (ORM)" csak a végeredményt értékeli. A korábban tárgyalt RLVR szabályalapú ellenőrzője az ORM egy speciális esetének tekinthető – a "tanult pontozó modell" helyettesítése determinisztikus szabályokkal.
 
@@ -676,7 +690,7 @@ Más szóval, **a tiszta eredmény jutalmak vakok a sikerarány mindkét véglet
 
 **Kapcsolat az RLVR-rel (egy gyakori zavar tisztázása).** Az RLVP és az RLVR (Reinforcement Learning with Verifiable Rewards), amelyet többször említettünk ebben a fejezetben, csak egy betűben különböznek, ami szépen kiemeli a komplementaritásukat: **az RLVR eredményeket verifikál; az RLVP ezen felül folyamatokat is verifikál.** A kettő kombinálásával olyan tréning jelet kapunk, amely egyszerre összpontosít a "feladat elvégzésére" és a "megfelelő elvégzésére" – pontosan erre van szüksége egy biztonságosan telepíthető Ágensnek.
 
-> **7-14. kísérlet ★★★: RLVP – Jutalmazd az eredményt, büntesd az utat `[Kiterjesztett kísérlet]`**
+> **7-16. kísérlet ★★★: RLVP – Jutalmazd az eredményt, büntesd az utat `[Kiterjesztett kísérlet]`**
 >
 > "Kísérleti cél": Annak meghatározása, hogy az "eredmény jutalmak + verifikálható út jelek" együttesen képesek-e csökkenteni a korlátsértéseket büntetéseken keresztül és javítani a mintahatékonyságot részleges hitelen keresztül, anélkül hogy a feladat sikerarányát feláldoznák.
 >
@@ -698,7 +712,7 @@ Jelenleg két aktív kutatási irány van az Ágens RL körül az eszközhívás
 
 Az eszköz RL-nek van egy elkerülhetetlen mérnöki részlete is: "loss maszkolás a környezeti visszajelzés tokenekhez". Egy eszközhívási pálya tartalmazza a modell által generált tokeneket (gondolkodás, eszközhívási paraméterek) és a környezet által visszaadott tokeneket (kódinterpretátor kimenet, keresési eredmények, ügyfélszolgálati válaszok). Utóbbiakat nem az irányelv generálja, hanem a környezet adja – ha szerepelnek a policy gradientben, a modellt arra tréningeznénk, hogy "megjósolja, mit fog kiadni a sandbox", ami eltér az optimalizációs céltól, és instabillá teszi a tréninget. A standard gyakorlat a környezeti visszajelzés tokenek maszkolása a loss számításakor, a gradiensek visszapropagálása csak a modell által generált tokenekre. Ez a ReTool egyik alapvető technikai pontja (gradiensek maszkolása a `<interpreter>` címkékben lévő visszajelzési tokenekhez), és erre utal a Search-R1 "maszkolt visszakeresett tokenek a tréning stabilizálásához" kifejezés. A nagy tréning keretrendszereknek, mint a veRL és az AWorld, ez a mechanizmus be van építve.
 
-> **7-15. kísérlet ★★★: ReTool – Kód interpretátorral fokozott matematikai probléma megoldás**
+> **7-14. kísérlet ★★★: ReTool – Kód interpretátorral fokozott matematikai probléma megoldás**
 >
 > ![7-19. ábra: A ReTool szöveg-kód gondolkodási és sandbox-végrehajtási visszacsatolási ciklusa](images/fig7-19.svg)
 >
@@ -721,7 +735,7 @@ Az eszköz RL-nek van egy elkerülhetetlen mérnöki részlete is: "loss maszkol
 >
 > Az SFT és az RL közötti időbeli költség alapvető különbsége az eltérő információsűrűségből fakad: az SFT minden tokenhez felügyeleti jelet ad, míg az RL csak egy siker/kudarc jelet ad epizódonként. A gyakorlatban a lépésenkénti idő a válasz hosszával nő, és néhány rendkívül hosszú válasz jelentősen meghosszabbíthatja a teljes tréning ciklust.
 >
-> **7-16. kísérlet ★★★: AWorld-train – Eszközhasználat tanulása sandboxban**
+> **7-15. kísérlet ★★★: AWorld-train – Eszközhasználat tanulása sandboxban**
 >
 > ![7-20. ábra: Az AWorld-train MCP-sandbox tréningarchitektúrája és eszköz-ökoszisztémája](images/fig7-20.svg)
 >
@@ -769,6 +783,76 @@ Az RLVR-hez képest az OPSD-nek két alapvető előnye van. **Először is, már
 
 Természetesen ennek a paradigmának a határai is világosak, főként abból fakadóan, hogy a tanító képességplafonja a tanulóhoz van láncolva: **a nyereség mértéke attól függ, hogy "mennyi többletképességet hozhat a kiváltságos információ".** Ha a modell, még a válasz birtokában sem tudja világosan elmagyarázni a megoldási folyamatot (például amikor a válasz kimerítő keresésből származik, nem pedig nyelvben artikulálható érvelésből), a self-distillation-nak nincs jel forrása. A meglévő kutatás a naiv OPSD hibamódjait is megfigyelte – például a modell fokozatosan elveszti az eredeti gondolkodási stílusát a self-distillation során, és extra regularizációra van szüksége a stabilitás megőrzéséhez[^ch7-16]. A "ugyanaz a modell, különböző kontextusok, tanító és tanuló egymás számára" vízió még gyorsan fejlődik, de már megnyitott egy utat a "nincs erősebb tanító" gyakori szorult helyzetére.
 
+## A bad case-ektől a post-trainingig
+
+Ez a rész visszatér a 6. fejezet nyitva hagyott kérdéséhez: hogyan lesz a termelési bad case-ekből készített értékelési adat a post-training bemenete? A hibaattribúciós rekordok, a végponttól végpontig tartó regressziós feladatok, a trajectory-prefix regressziós feladatok és a rubrikapontszámok mind más-más tanítási felhasználásra képezhetők le.
+
+7-4. táblázat. A 6. fejezet értékelési adatainak leképezése a 7. fejezet tanítási felhasználásaira
+
+| 6. fejezet értékelési adata | 7. fejezet tanítási felhasználása |
+|---|---|
+| Verifierrel ellátott end-to-end regressziós feladat | RL-rollout feladatok és verifikálható jutalmak (RLVR); mintavételi készlet rejection-sampling fine-tuninghoz (RFT) |
+| Trajectory-prefix regressziós feladat | DPO preferenciapárok, SFT-demonstrációk döntési határokhoz, valamint tanári állapotok On-Policy Distillationhöz |
+| Hiba-attribúciós rekord (első hibás lépés és hibakategória) | Negatív címkék folyamatfelügyelethez (PRM); szabályok RLVP útvonalbüntetésekhez |
+| Többdimenziós rubrikapontszámok és human gold set | A vektoros jutalmak dimenziói; tanítási és kalibrációs adatok generatív jutalommodellekhez (GRM) |
+
+### 1. eset: A Coding Agent túl korai befejezése
+
+**A bad case-től az attribúcióig.** Egy Coding Agent a tesztek futtatása előtt mondhatja, hogy „kész”, lezárhat egy többcélú feladatot csak részleges teljesítés után, vagy néhány hiba után kijelentheti, hogy a feladat lehetetlen. Az első hiba az a döntési határ, amikor bizonyíték nélkül készül lezárni a feladatot; a későbbi hibás tesztek és újrapróbálkozások már következmények. A felhasználói javítások, a negatív visszajelzés és az utólagos auditok mind feltárhatják ezt a kategóriát.
+
+**Tanítási adatok.** Amikor az Ágens befejezettnek jelenti a feladatot, egy end-to-end regressziós feladat rejtett elfogadási teszteket futtat: a siker pozitív, a kudarc negatív jutalmat kap. A trajectory-prefix feladat a korai állítást `rejected`, a „futtasd a teszteket, ellenőrizd egyenként az elfogadási feltételeket, majd vonj le következtetést” műveletet pedig `chosen` értékre állítja. A tanár által generált jelölteket determinisztikus verifier szűri; a feladattípusokat, a hiányzó feltételeket és a befejező megfogalmazást változtatjuk, majd kis arányban általános instruction adatokkal keverjük a LoRA-hoz.
+
+**Értékelés.** A befejezetlen feladatok peremkészletét a valóban befejezett feladatok retention készletével együtt kell mérni. Az első azt vizsgálja, hogy a modell ellenőriz-e a korai leállás helyett; a második azt, hogy továbbra is képes-e normálisan lezárni a feladatot. Ellenkező esetben a modell túlságosan óvatossá válhat, és soha nem áll le.
+
+> **7-17. kísérlet ★★: „Korai befejezés” bad case-ekből DPO**
+>
+> **Kísérleti cél**: A hiba-attribúciótól a trajectory-prefix regressziós adaton, a DPO preferenciapárokon, a 7B LoRA-tréningen és a külön boundary/retention értékelésen át a teljes folyamat lefuttatása.
+>
+> **Adatkonstrukció**: A mellékelt projekt négy hibakategóriát lefedő 24 valósághű esetet, valamint egymástól elkülönített holdout készletet (12 boundary- és 8 retention-eset) biztosít. Az experiment oktatási célú; éles adatoknál több feladatcsaládra és olyan rejtett tesztekre van szükség, amelyeket a modell nem módosíthat, és amelyeknek a futtatását sem állíthatja pusztán.
+
+### 2. eset: Kínai idézőjelek
+
+A „kínai cikkek egyenes idézőjeleit alakítsuk görbe idézőjelekké” kérés nem globális csere szabálya. Ugyanaz az ASCII idézőjel mást jelent a kínai prózában, az angol idézetekben, a Markdown-kódban, a kódblokkokban, a kommentekben, a JSON-ban és az útvonalakban. A kínai próza és kommentárok idézőjelei átalakíthatók; a végrehajtható kódot, az angol forrásszöveget, a JSON/schema-t, az útvonalakat, az azonosítókat és a bizonytalan részeket meg kell őrizni.
+
+**A bad case-től az attribúcióig.** A Harness-nek hatókör szerint kell felosztania a dokumentumot, a modellkimenetet az engedélyezett és védett szakaszokkal összevetnie, majd Markdown-, JSON- és forrásnyelvi szintaxis-ellenőrzéseket futtatnia. Ha a renderelés vagy a sorosítás már előbb módosítja a bemenetet, a hiba a Harness-ben van. Ha a modell az eredeti byte-okat kapja, mégis módosít egy védett idézőjelet vagy kihagy egy engedélyezett kínai idézőjelet, az első eltérés hatókör-választási hiba, amely alkalmas post-training adatkonstrukcióra.
+
+**Tanítási adatok.** Egy Skill pozitív és negatív hatókörszabályokat határoz meg. A minták forrás- és célszöveget párosítanak: a kínai próza, a beágyazott idézetek és a kínai kommentek pozitív szerkesztések; az angol szöveg, a literálok, a JSON, az útvonalak, az inline kód és a kódblokkok védett negatív példák. A train, holdout és boundary halmazt sablon, műfaj, változó-kombináció és nyelv szerint kell szétválasztani; az SFT előtt gépi kapukat és rétegzett kézi auditot kell futtatni.
+
+**Értékelés.** Jelentsük a célidézőjel-átalakítást, a védett területek megőrzését, a nem célzott módosításokat, a szintaxis érvényességét és a teljes szöveg exact match-ét. Éles környezetben a már helyes dokumentumok retention készlete fogja meg a túlzott szerkesztést.
+
+> **7-18. kísérlet ★★: Hatókörérzékeny görbeidézőjel-SFT**
+>
+> **Kísérleti cél**: Megvizsgálni, hogy a LoRA SFT ismeretlen kontextuskombinációkon is csak az engedélyezett idézőjeleket alakítja-e át, miközben a védett szintaxist megőrzi.
+>
+> **Beállítás és adatok**: Qwen3-8B bf16 LoRA, két epoch és 256 frissítés; 16 fragmenttípus, 10 dokumentumműfaj és 9 programozási nyelv; 1024 train-, 256 holdout- és 256 boundary-minta. A Skill szolgál címkézésként, minőségkapuként és regressziós specifikációként; 48 rétegzett kézi spot-check készült.
+>
+> **Eredmények**: A holdout exact a bázismodell 0%-áról 96,9%-ra nőtt, a boundary exact 97,7%, a védett területek megőrzése 100%. Python, JavaScript, Java, Go, Rust, SQL, Shell, YAML és Markdown 100%, a JSON 68,8%, ezért külön strukturáltadat-útvonal szükséges.
+
+### 3. eset: A fájlszerkesztések gyakori kudarca
+
+A Coding Agentek gyakran a `edit_file(path, old_string, new_string)` eszközt használják. Az eszköz pontosan egyezteti az `old_string` értékét, ezért már egyetlen szóköz, sortörés, fordított perjel, Unicode-összetétel vagy ritka token megváltozása is „old_string not found” hibát okoz. Az ismételt újrapróbálkozás tünet, nem feltétlenül a gyökérok.
+
+**A bad case-től az attribúcióig.** Hasonlítsuk össze, hol jelenik meg az első eltérés az alábbi láncban:
+
+```text
+original file bytes → tool return → Harness serialization → model context
+→ model token output → decoded string → JSON/tool-call parsing → tool matching
+```
+
+A modellgenerálás előtti változások a fájlolvasóhoz, a sorosítóhoz vagy a Harness-hez tartoznak. A tokenizer encode→decode útját külön is auditálni kell. Csak akkor soroljuk a példát modelloldali másolási hibának és küldjük post-trainingbe, ha a modell az eredeti byte-okat kapja, és az első eltérési pont az ő kimenete.
+
+**Tanítási adatok.** Három verifikálható feladatot használjunk: szó szerinti másolás; a megjelölt cél kiválasztása hasonló hard negative-ek közül; valamint a pontos cél behelyezése a `old_string` tool JSON mezőbe. Randomizáljuk a hosszúságot, a tokencsomagokat és a kontextust, beleértve a szóközöket, valódi sortöréseket, literális escape-eket, fordított perjeleket, Unicode-összetett karaktereket, kínai karaktereket és nulla szélességű karaktereket. A split seed, hossz, token-összetétel és wrapper-kontextus szerint történjen.
+
+**Értékelés.** A modell byte-exact, code-point-exact és token-exact eredményét, az első eltérés helyét és a tokenizer round-trip mutatóját különítsük el a végponttól végpontig tartó eszközsikertől. Ha a közvetlen másolás helyes, de a `edit_file` mégis hibázik, a modell tanítása helyett a sorosítást vagy az eszközprotokollt kell javítani.
+
+> **7-19. kísérlet ★★: Exact-copy SFT speciális karakterláncokra**
+>
+> **Kísérleti cél**: Miután megerősítettük, hogy a modell kimenete az első eltérő réteg, vizsgáljuk meg a LoRA SFT-t ismeretlen véletlen karakterláncokon, és külön tokenizer-audittal zárjuk ki a tokenizációs artefaktumokat.
+>
+> **Beállítás és adatok**: Két epoch Qwen3-8B bf16 LoRA; a `verbatim`, `decoy_copy` és `tool_json` három feladattípusban 1024 train-, 256 holdout- és 256 boundary-minta. A generátor reprodukálható véletlen karakterláncokat, hard negative-eket, 10 nyelvi kontextust, 8 dokumentumműfajt és speciális szóközöket, escape-eket, Unicode-ot, kínait, valamint nulla szélességű karaktereket használ.
+>
+> **Eredmények**: A holdout byte-exact pontosság 37,5%-ról 78,9%-ra nő, a boundary 80,1%, az első byte eltérésének átlaga 54,0 és 54,2. Az 512 próbás auditban a Qwen3/Qwen2.5 tokenizer round-tripje 80,1%, a Mistralé 100%; a tokenizer és a Harness hibáit a modell másolási eredményeitől külön kell jelenteni.
+
 ## A teljes poszt-tréning kép és gyakorlati tippek
 
 A pre-tréning "következő token előrejelzése" céljától kiindulva ez a fejezet hosszú utat járt be: az SFT rögzíti a formátumot, az RL előmozdítja az általánosítást, a többlépéses feladatok bevezetik a hitelkiosztás problémáját, a jutalomtervezés az eredmény jutalmaktól az út jelekig terjed, amelyek jutalmazzák az eredményt miközben korlátozzák a folyamatot, és az eszközhasználat kombinatorikus robbanást hoz. Egy szál húzódik végig mindezeken a kísérleteken – amit a modell megtanul, attól függ, hogy mit tanít neki a tréning jel, és ennek a jelnek a minőségét főként az adat és a környezet határozza meg, nem az algoritmus.
@@ -800,6 +884,8 @@ Az SFT és az RL nem versengő alternatívák, hanem egymást követő szakaszok
 
 Két megítélés húzódik végig ezen a fejezeten, és érdemes jobban megjegyezni őket, mint bármely algoritmust. Először is, **az adat és a környezet fontosabb, mint az algoritmusok**: elég, ha tudjuk, hogyan használjuk a meglévő RL algoritmusokat; ami valóban elválasztja a csapatokat, az a szimulációs környezet hűsége és a tréning adatok minősége. Amikor valós környezet nem építhető, egy modell használata a környezet szimulálására (eszköz visszatérési értékek szintetizálása, környezeti dinamika szimulálása) szintén járható út – de ne feledd, hogy a szimulátor torzítása a tréning plafonja. Nemcsak a válaszok szűrhetők; a tréning adatok feladat eloszlása maga is optimalizációs céllá válhat. Sok forgatókönyvben, ha az SFT adat elég jó minőségű, lehet, hogy egyáltalán nincs szükség RL-re. Másodszor, **az RL fő szűk keresztmetszete ma a mintahatékonyság**: a két legígéretesebb irány jelenleg az On-Policy Distillation, amely sűríti a jelet minden lépésben, és a verifikált út büntetés RLVP, amely az elpazarolt környezeti visszajelzést tanulható jellé alakítja ("jutalmazd az eredményt, büntesd az utat", részleges hitellel az elérhető előrehaladásért, hogy megmentse a mintákat a minden-kudarc csoportokban). Ami közös bennük, az még mindig ugyanaz az ötlet – olyan információt felvenni, ami már létezik a környezetben és az adatokban, de amit a tiszta eredmény jutalmak elpazarolnak, és visszaalakítani olyasmivé, amiből a modell tanulhat. Amikor nincs elérhető erősebb tanító, ennek a gondolatmenetnek van egy self-distillation változata is: az OPSD hagyja, hogy ugyanaz a modell két szerepben felügyelje magát – egy "választ olvasó tanító" és egy "csak a problémát látó tanuló" –, tokenről tokenre sűrű jeleket hozva olyan feladatokhoz, amelyeknek jutalmai nem verifikálhatóak.
 
+Ez a fejezet arra válaszolt, hogyan valósítható meg az Ágens folyamatos fejlődése a paraméterek frissítésével. A következő fejezetben látni fogjuk, hogy a paraméter csak egy a négy, az Ágens önfejlődését hordozó közül: tudás, utasítások, programok és paraméterek.
+
 [^ch7-1]: Schulman, John and Thinking Machines Lab, "LoRA Without Regret", 2025.
 [^ch7-4]: Ouyang, Long et al., "Training Language Models to Follow Instructions with Human Feedback", OpenAI, 2022.
 [^ch7-5]: Gao, Leo, John Schulman, and Jacob Hilton, "Scaling Laws for Reward Model Overoptimization", OpenAI, 2023.
@@ -819,7 +905,6 @@ Két megítélés húzódik végig ezen a fejezeten, és érdemes jobban megjegy
 [^ch7-19]: Zhu, Kaijie, et al. "TermiGen: High-Fidelity Environment and Robust Trajectory Synthesis for Terminal Agents", 2026. arXiv:2602.07274.
 [^ch7-20]: Hua, Zhanbo, et al. "CLI-Universe: Towards Verifiable Task Synthesis Engine for Terminal Agents", 2026. arXiv:2606.22883.
 
-Ez a fejezet megválaszolta a "hogyan tréningezzünk" paraméterfrissítési kérdését. A következő fejezet visszahelyezi a modell paramétereket a teljes Ágens rendszerbe: a paraméterek csak egy a négy frissítési hordozó közül, az ismeretek, utasítások és programok mellett. A sajátos kihívásuk az, hogy hogyan nyerjünk megbízható tanulási jeleket a telepítési pályákból, válasszuk ki a helyes frissítési helyet, és irányítsuk minden jelölt verzió validálását, kiadását és visszavonását. A konkrét tréning algoritmusok tekintetében a 8. fejezet közvetlenül erre a fejezetre hivatkozik, ahelyett hogy megismételné az anyagot.
 
 ## Gondolatkérdések
 

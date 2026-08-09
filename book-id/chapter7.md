@@ -1,5 +1,11 @@
 # Pascapelatihan Model
 
+> **Pembaruan 2026.** Edisi revisi memperjelas bahwa “SFT menghafal, RL menggeneralisasi” adalah pengamatan dari perbandingan terkontrol GeneralPoints/V-IRL, bukan hukum universal. Edisi ini juga memisahkan simulasi keluaran tool dari simulasi dinamika lingkungan secara menyeluruh, serta memperlakukan bias simulator sebagai batas atas pelatihan.
+>
+> Dua jalur untuk meningkatkan efisiensi sampel ditonjolkan: On-Policy Distillation mengubah reward akhir sebuah rollout menjadi panduan per token; RLVP mengubah umpan balik jalur yang biasanya terbuang menjadi sinyal yang dapat dipelajari. Jika tidak ada guru yang lebih kuat, OPSD menggunakan informasi istimewa dengan model yang sama sebagai guru dan siswa.
+>
+> Urutan eksperimen dalam edisi ini: 7-13 SimpleVLA-RL; 7-14 ReTool; 7-15 AWorld-train; 7-16 RLVP.
+
 Formula inti dari buku ini adalah Agent = LLM + Context + Tools. Bab ini beralih ke LLM itu sendiri—"otak"-nya—dan menguji bagaimana post-training dapat membantu model menggunakan context dan tools secara lebih efektif, sehingga meningkatkan kapabilitas dari seluruh sistem Agent. Akhir dari Bab 6 menunjukkan bahwa sistem evaluasi dan lingkungan simulasi adalah dua batu loncatan dari post-training: lingkungan evaluasi memberikan tempat latihan untuk training, dan metrik evaluasi memberikan targetnya. Bab ini dibangun di atas batu loncatan tersebut dan membahas bagaimana cara yang sebenarnya untuk mengubah bobot model—bagaimana menanamkan kapabilitas ke dalam parameter.
 
 Bab ini mengasumsikan tidak adanya latar belakang tentang reinforcement learning atau model training. Kami tidak mengharapkan Anda mengetahui gradien atau policy optimization. Alih-alih, kami memulai dari pertanyaan tentang bagaimana sebuah model dilatih pada awalnya, memperjelas apa tujuan setiap langkah, bagaimana cara kerjanya, dan masalah apa yang dipecahkannya. Pada akhir bab ini, Anda seharusnya dapat menjawab pertanyaan-pertanyaan berikut: Berapa banyak tahapan yang terlibat dalam membentuk kapabilitas model? Apa yang dilakukan pada setiap tahap? Mengapa mereka harus terjadi dalam urutan ini? Dan di mana Anda harus memfokuskan upaya dalam proyek Anda sendiri?
@@ -293,7 +299,7 @@ Sebelum terjun langsung dengan SFT, ada satu pertanyaan praktis yang tidak bisa 
 >
 > Distilasi dapat dilakukan di sepanjang dua dimensi: "besar ke kecil" (menggantikan model besar dengan model menengah atau kecil untuk menyeimbangkan biaya dan kualitas) dan "berpikir ke tidak berpikir" (melipat CoT eksplisit menjadi pengetahuan parametrik implisit pada skala yang sama, mencapai peningkatan 20-30x dalam kecepatan respons). Keduanya tidak saling eksklusif dan sering kali digunakan bersama di lingkungan produksi. Penting untuk dicatat bahwa distilasi mewarisi batas-batas teacher—jika teacher memiliki kesalahan sistematis pada long tail distribusi, student akan semakin melekat pada kesalahan ini; jika teacher mengandalkan alat untuk memastikan kebenaran, distilasi output yang sederhana akan kehilangan ketangguhan (robustness) yang diberikan oleh alat-alat tersebut. Hal yang dapat dipetik dari sisi engineering: ketika desain produk stabil, distribusi input dapat diprediksi, dan batasan biaya signifikan, prompt distillation adalah pengoptimalan yang sangat baik; selama masa eksplorasi atau sebelum tugasnya stabil, mempertahankan pemikiran eksplisit dan prompts yang dapat diedit tetap menjadi inti dari iterasi yang cepat.
 >
-> **Eksperimen 7-9 ★★★: Chain of Thought (CoT) Distillation `[Eksperimen Lanjutan]`**
+> **Eksperimen 7-9 ★★★: Chain of Thought (CoT) Distillation**
 >
 > Prompt distillation membuang proses berpikir; CoT distillation melakukan sebaliknya: ia mentransfer **lintasan pemikiran secara lengkap** dari model teacher yang kuat ke model student. Mendistilasi CoT dari model teacher yang cakap dapat memungkinkan student dengan jumlah parameter yang sama untuk memulihkan 70%-80% dari kemampuan teacher tersebut. Bagi tim yang tidak bertujuan untuk menembus batasan kapabilitas state-of-the-art tetapi menginginkan model yang dapat mereka kontrol sendiri, ini adalah strategi pengikut yang paling pragmatis. Serangkaian model kecil hasil distilasi yang bersifat open-source dari DeepSeek-R1 (menggunakan lintasan pemikiran R1 untuk melakukan SFT pada seri Qwen dan Llama) adalah contoh representatif dari pendekatan ini.
 >
@@ -312,6 +318,10 @@ Sebelum terjun langsung dengan SFT, ada satu pertanyaan praktis yang tidak bisa 
 > **Kriteria Penerimaan:** Model siswa yang telah didistilasi menunjukkan peningkatan signifikan pada benchmark matematika dan kode dibandingkan sebelum distilasi, serta menampilkan perilaku seperti refleksi, pelacakan mundur, dan verifikasi. Perhatikan pula biaya distilasi: siswa dapat mewarisi kesalahan sistematis dan kebiasaan berpikir bertele-tele dari guru; masalah terakhir dapat dioptimalkan lebih lanjut dengan AdaptThink pada Eksperimen 7-10.
 
 Keempat eksperimen ini memiliki fitur yang sama—"menuliskan pemetaan dan protokol yang stabil ke dalam parameter": voice SFT memantapkan protokol kontrol gaya, multilingual SFT memantapkan templat pengorganisasian pemikiran, dan distillation SFT memantapkan pemetaan langsung dari input ke output. Mereka berbagi tujuan yang jelas, format yang bersih, dan kriteria evaluasi yang stabil, yang memungkinkan SFT untuk memberikan keuntungan dengan efisiensi sampel yang sangat tinggi; namun begitu distribusinya bergeser, kecenderungannya terhadap hafalan bermanifestasi sebagai penurunan kinerja. Ini adalah manifestasi eksperimental dari pemisahan *memory-generalization* yang dibahas pada Section 7.1, "The Essential Difference Between SFT and RL."
+
+Bad case dari Bab 6 juga dapat dijadikan data pelatihan. Untuk coding agent yang selesai terlalu cepat, potong prefiks trajectory sebelum deklarasi selesai; deklarasi asli menjadi rejected, sedangkan “jalankan tes, periksa setiap syarat penerimaan, lalu simpulkan” menjadi chosen. Ini lebih cocok untuk DPO atau demonstrasi batas keputusan daripada SFT biasa. Simpan penyebab kegagalan, kondisi penerapan, dan verifier bersama setiap sampel.
+
+Tugas yang sama dapat menjadi lingkungan latihan RL: SFT memakai trajectory yang sudah diverifikasi, sementara RL mengulangi tugas dengan policy saat ini dan verifier eksternal menilai hasilnya. Dengan demikian bad case menentukan batas keputusan yang perlu diperbaiki, bukan sekadar contoh untuk dihafal.
 
 ## Kapan Memilih SFT dan Kapan Memilih RL
 
@@ -407,6 +417,8 @@ Satu rumus ini memunculkan empat pertanyaan umum dari para pemula, yang akan kit
 **Hubungan Antara RLHF dan RLVR.** Ringkasnya, perbedaan antara kedua pendekatan ini terletak pada **dari mana reward tersebut berasal**: *reward* RLHF berasal dari RM yang dipelajari (didukung oleh data preferensi manusia), sementara **RLVR** (Reinforcement Learning with Verifiable Rewards) menggunakan *verifier* berbasis aturan (apakah pengujiannya berhasil, apakah jawabannya benar). Tugas-tugas *Agent* kebetulan sebagian besar dapat diverifikasi—inilah tepatnya alasan mengapa bab ini berfokus pada RLVR sebagai alur utamanya. Namun, hal ini bukanlah tentang memilih salah satu dan mengabaikan yang lain; model-model yang di-*deploy* dalam praktiknya menggunakan keduanya secara kombinasi: RLHF menangani kualitas percakapan dan penyelarasan keamanan (*safety alignment*), sementara RLVR menangani penalaran dan kapabilitas *Agent*. Bagian "Evolution of Reward Paradigms" nanti akan membahas *generative reward models*, yang dapat dilihat sebagai titik temu dari kedua garis ini—menggunakan *reward model* yang dapat dilatih untuk menangani tugas-tugas *open-ended* yang tidak dapat dicakup oleh aturan.
 
 ## Perbandingan Algoritma Reinforcement Learning
+
+**GRPO (Group Relative Policy Optimization)** diperkenalkan oleh DeepSeek dan kini menjadi salah satu algoritma yang paling umum digunakan dalam pelatihan RL. Gagasan intinya adalah mengestimasi advantage relatif dengan membandingkan sekelompok rollout untuk masalah yang sama, tanpa melatih value network terpisah.
 
 Eksperimen *single-turn* sebelumnya menunjukkan keunggulan generalisasi dari RL, dan bagian sebelumnya memperkenalkan pendekatan *preference optimization* dari RLHF. Namun, algoritma spesifik yang digunakan dalam karya-karya ini bervariasi dan hanya sebagian kecil dari banyak pilihan. Sebelum beralih ke tugas *multi-turn* yang lebih kompleks, kita perlu secara sistematis meninjau karakteristik dan skenario penerapan dari algoritma-algoritma *mainstream*.
 
@@ -519,13 +531,15 @@ Algoritma bukannya tidak penting—mereka hanya datang belakangan. Urutan usaha 
 
 ## Dari Single-Turn ke Multi-Turn: Credit Assignment dan Desain Reward
 
+“Selesai terlalu cepat” adalah contoh konkret. Saat model menyatakan tugas selesai, Harness menjalankan tes penerimaan di ruang kerja terisolasi yang tidak terlihat oleh model; hanya lulus yang mendapat reward positif. Tes harus membaca berkas atau status lingkungan nyata, bukan kata “selesai”. Pisahkan kumpulan batas tugas belum selesai dari kumpulan tugas yang benar-benar selesai agar koreksi tidak berubah menjadi sikap selalu menolak berhenti.
+
 ### Tantangan Utama dari Tugas Multi-Giliran
 
 ![Gambar 7-14: Perbandingan RL Putaran Tunggal dan Multi-Putaran](images/fig7-14.svg)
 
 ![Gambar 7-15: Credit Assignment dalam Interaksi Multi-Putaran](images/fig7-15.svg)
 
-Beralih dari giliran tunggal ke multi-giliran melibatkan lompatan kualitatif dalam kompleksitas. Kebijakan tidak hanya harus memilih tindakan optimal untuk langkah saat ini tetapi juga mempertimbangkan nilai keadaan di masa depan; itu tidak hanya harus menangani umpan balik langsung tetapi juga melakukan **Credit Assignment** di bawah imbalan yang tertunda—menentukan langkah mana dalam urutan multi-langkah yang paling berkontribusi terhadap hasil akhir. Misalnya, Agent layanan pelanggan memecahkan masalah pengguna setelah 10 giliran dialog dan menerima ulasan positif—tetapi apakah ulasan positif ini harus dikaitkan dengan pertanyaan yang tepat pada giliran ke-2 atau penjelasan yang sabar pada giliran ke-7? Multi-giliran juga memperkenalkan tantangan lain: **Partial Observability** (Agent tidak dapat memperoleh keadaan lengkap dan harus membangun representasi keadaan implisit dari pengamatan historis).
+Beralih dari giliran tunggal ke multi-giliran melibatkan lompatan kualitatif dalam kompleksitas. Kebijakan tidak hanya harus memilih tindakan optimal untuk langkah saat ini tetapi juga mempertimbangkan nilai keadaan di masa depan; itu tidak hanya harus menangani umpan balik langsung tetapi juga melakukan **Credit Assignment** di bawah imbalan yang tertunda—menentukan langkah mana dalam urutan multi-langkah yang paling berkontribusi terhadap hasil akhir. Misalnya, Agent layanan pelanggan memecahkan masalah pengguna setelah 10 giliran dialog dan menerima ulasan positif—tetapi apakah ulasan positif ini harus dikaitkan dengan pertanyaan yang tepat pada giliran ke-2 atau penjelasan yang sabar pada giliran ke-7?
 
 Interaksi multi-giliran yang dibahas di sini mengambil bentuk loop ReAct yang dijelaskan pada Bab 1 dan 4: setiap giliran adalah satu iterasi dari **Think → Act → Observe**, dan penundaan imbalan muncul dari kendala struktural bahwa "hasil akhir hanya dapat dinilai setelah beberapa giliran."
 
@@ -583,7 +597,7 @@ Metode ini memiliki beberapa keuntungan utama: generalisasinya baik karena mempe
 
 ### Process Reward vs. Outcome Reward: Pilihan Utama untuk Tugas Multi-Putaran
 
-Di luar credit assignment dan partial observability, tugas multi-giliran juga menghadapi masalah **long-range dependency**—dampak dari keputusan awal, seperti pengaturan sub-tujuan atau pemilihan alat, mungkin baru terlihat puluhan langkah kemudian. Ini menghadirkan pilihan utama dalam desain imbalan: **Process Reward** memberikan umpan balik di setiap langkah, mengurangi kesulitan credit assignment tetapi memperkenalkan bias desain manusia, berpotensi membatasi ruang eksplorasi. **Outcome Reward** memberikan umpan balik hanya pada bagian akhir, menawarkan kebebasan eksplorasi maksimum tetapi menuntut kesulitan pelatihan dan kebutuhan sampel yang lebih tinggi. Secara analogi, process reward seperti guru yang menilai pekerjaan rumah soal demi soal, memungkinkan siswa dengan cepat mengetahui letak kesalahannya; outcome reward ibarat hanya melihat nilai ujian akhir, memberi siswa lebih banyak kebebasan untuk mengeksplorasi metode pembelajaran, tetapi umpan baliknya datang sangat terlambat. Desain fungsi imbalan berkaitan erat dengan konstruksi lingkungan evaluasi yang dibahas pada Bab 6—lingkungan evaluasi otomatis berkualitas tinggi adalah prasyarat untuk pelatihan RL.
+Di luar credit assignment, tugas multi-giliran juga menghadapi masalah **long-range dependency**—dampak dari keputusan awal, seperti pengaturan sub-tujuan atau pemilihan alat, mungkin baru terlihat puluhan langkah kemudian. Ini menghadirkan pilihan utama dalam desain imbalan: **Process Reward** memberikan umpan balik di setiap langkah, mengurangi kesulitan credit assignment tetapi memperkenalkan bias desain manusia, berpotensi membatasi ruang eksplorasi. **Outcome Reward** memberikan umpan balik hanya pada bagian akhir, menawarkan kebebasan eksplorasi maksimum tetapi menuntut kesulitan pelatihan dan kebutuhan sampel yang lebih tinggi. Secara analogi, process reward seperti guru yang menilai pekerjaan rumah soal demi soal, memungkinkan siswa dengan cepat mengetahui letak kesalahannya; outcome reward ibarat hanya melihat nilai ujian akhir, memberi siswa lebih banyak kebebasan untuk mengeksplorasi metode pembelajaran, tetapi umpan baliknya datang sangat terlambat. Desain fungsi imbalan berkaitan erat dengan konstruksi lingkungan evaluasi yang dibahas pada Bab 6—lingkungan evaluasi otomatis berkualitas tinggi adalah prasyarat untuk pelatihan RL.
 
 Secara terminologis, kedua imbalan ini bersesuaian dengan dua tipe model imbalan: **Process Reward Model (PRM)** menilai setiap langkah peralihan dari penalaran atau eksekusi. Karya perwakilan adalah "Let's Verify Step by Step" dari OpenAI[^ch7-7]—pada tugas penalaran matematika, PRM yang dilatih dengan anotasi manusia selangkah demi selangkah secara signifikan mengungguli pengawasan yang hanya melihat jawaban akhir. **Outcome Reward Model (ORM)** hanya mengevaluasi hasil akhir. Verifikator berbasis aturan dalam RLVR yang dibahas sebelumnya dapat dilihat sebagai kasus khusus dari ORM—menggantikan "model penilaian yang dipelajari" dengan aturan deterministik.
 
@@ -661,7 +675,7 @@ Ringkasnya: **Sinyal padat (dense signals) berguna hanya jika mereka dapat memul
 
 **Hubungan dengan RLVR (mengklarifikasi titik kebingungan yang umum).** RLVP dan RLVR (Reinforcement Learning with Verifiable Rewards), yang berulang kali disebutkan dalam bab ini, hanya berbeda satu huruf, yang dengan rapi menyoroti sifat komplementernya: **RLVR memverifikasi hasil; RLVP juga memverifikasi proses.** Menggabungkan keduanya menghasilkan sinyal pelatihan yang berfokus pada "menyelesaikan pekerjaan" dan "melakukannya dengan benar"—tepat seperti yang dibutuhkan untuk Agent yang dapat di-deploy dengan aman.
 
-> **Eksperimen 7-14 ★★★: RLVP—Hargai Hasilnya, Hukum Jalurnya `[Eksperimen Diperluas]`**
+> **Eksperimen 7-16 ★★★: RLVP—Hargai Hasilnya, Hukum Jalurnya `[Eksperimen Diperluas]`**
 >
 > **Tujuan Eksperimen**: Menentukan apakah "outcome rewards + sinyal jalur yang dapat diverifikasi" keduanya dapat mengurangi pelanggaran kendala melalui hukuman dan meningkatkan efisiensi sampel melalui kredit sebagian (partial credit), tanpa mengorbankan tingkat keberhasilan tugas.
 >
@@ -683,7 +697,7 @@ Saat ini terdapat dua jalur penelitian yang aktif seputar Agent RL untuk Tool Ca
 
 Tool RL juga memiliki detail rekayasa yang tidak dapat dihindari: **loss masking untuk token umpan balik lingkungan**. Trajectory dari Tool Call berisi token yang dihasilkan oleh model itu sendiri (thinking, parameter pemanggilan tool) dan token yang dikembalikan oleh lingkungan (output Code Interpreter, hasil pencarian, balasan layanan pelanggan). Yang terakhir tidak dihasilkan oleh policy melainkan diberikan oleh lingkungan—jika mereka disertakan dalam policy gradient, model akan dilatih untuk "memprediksi apa yang akan dikeluarkan (output) oleh Code Sandbox," yang menyimpang dari tujuan pengoptimalan dan membuat pelatihan menjadi tidak stabil. Praktik standarnya adalah menutupi (mask) token umpan balik lingkungan ketika menghitung kerugian (loss), melakukan propagasi balik (backpropagating) gradien hanya untuk token yang dihasilkan oleh model. Ini adalah salah satu poin teknis inti dari ReTool (menutupi gradien untuk token umpan balik (feedback tokens) di dalam tag `<interpreter>`), dan ini adalah apa yang disebut oleh Search-R1 sebagai "masking retrieved tokens to stabilize training." Framework pelatihan utama seperti veRL dan AWorld memiliki mekanisme bawaan ini.
 
-> **Eksperimen 7-15 ★★★: ReTool—Penyelesaian Soal Matematika yang Ditingkatkan Code Interpreter**
+> **Eksperimen 7-14 ★★★: ReTool—Penyelesaian Soal Matematika yang Ditingkatkan Code Interpreter**
 >
 >
 > ![Gambar 7-19: Loop Umpan Balik Pemikiran Teks-Kode ReTool yang Disisipkan dan Eksekusi Code Sandbox](images/fig7-19.svg)
@@ -708,7 +722,7 @@ Tool RL juga memiliki detail rekayasa yang tidak dapat dihindari: **loss masking
 >
 > Perbedaan mendasar dalam biaya waktu (time cost) antara SFT dan RL berasal dari perbedaan kepadatan informasi: SFT memberikan sinyal pengawasan (supervisory signal) untuk setiap token, sedangkan RL hanya memberikan sinyal sukses/gagal per episode. Dalam praktiknya, waktu per langkah meningkat dengan panjang respons, dan beberapa respons yang sangat panjang dapat memperpanjang seluruh siklus pelatihan secara signifikan.
 >
-> **Eksperimen 7-16 ★★★: AWorld-train—Belajar Menggunakan Tool di Code Sandbox**
+> **Eksperimen 7-15 ★★★: AWorld-train—Belajar Menggunakan Tool di Code Sandbox**
 >
 >
 > ![Gambar 7-20: Ekosistem Tool dan Arsitektur Pelatihan Code Sandbox MCP AWorld-train](images/fig7-20.svg)
@@ -759,6 +773,77 @@ Dibandingkan dengan RLVR, OPSD memiliki dua keunggulan inti. **Pertama, ia tidak
 
 Tentu saja, batas-batas paradigma ini juga jelas, terutama berasal dari fakta bahwa batas atas (ceiling) kemampuan guru terkunci pada siswa itu sendiri: **besarnya perolehan bergantung pada "seberapa banyak kemampuan ekstra yang dapat diberikan oleh informasi istimewa."** Jika model, bahkan dengan jawaban di tangan, tidak dapat menjelaskan secara jelas proses penyelesaiannya (misalnya, ketika jawaban berasal dari exhaustive search alih-alih penalaran yang dapat diartikulasikan dalam bahasa), self-distillation tidak memiliki sumber sinyal. Penelitian yang ada juga mengamati mode kegagalan OPSD naif—sebagai contoh, model secara bertahap kehilangan gaya berpikir aslinya selama self-distillation dan memerlukan regularisasi ekstra agar tetap stabil[^ch7-16]. Visi "model yang sama, konteks yang berbeda, saling menjadi guru dan siswa" masih berkembang pesat, tetapi hal itu telah membuka jalan bagi kesulitan umum yaitu "tidak memiliki guru yang lebih kuat."
 
+## Dari bad case ke post-training
+
+Bagian ini kembali ke pertanyaan dari Bab 6: bagaimana data evaluasi yang dibangun dari bad case produksi menjadi masukan post-training? Catatan atribusi kegagalan, regresi end-to-end, regresi trajectory-prefix, dan skor rubrik memiliki penggunaan pelatihan yang berbeda.
+
+Tabel 7-4. Pemetaan data evaluasi Bab 6 ke penggunaan pelatihan Bab 7
+
+| Data evaluasi Bab 6 | Penggunaan pelatihan Bab 7 |
+|---|---|
+| Tugas regresi end-to-end dengan verifier | Tugas rollout RL dan reward yang dapat diverifikasi (RLVR); pool sampling untuk RFT |
+| Tugas regresi trajectory-prefix | Pasangan preferensi DPO, demonstrasi SFT untuk batas keputusan, dan state guru untuk On-Policy Distillation |
+| Catatan atribusi (langkah pertama yang salah dan kategorinya) | Label negatif untuk supervisi proses (PRM); aturan penalti jalur RLVP |
+| Skor rubrik multidimensi dan gold set manusia | Dimensi reward vektor; data pelatihan dan kalibrasi GRM |
+
+### Kasus 1: Coding Agent selesai terlalu cepat
+
+**Dari bad case ke atribusi.** Coding Agent dapat menyatakan “selesai” sebelum menjalankan tes, menutup tugas dengan banyak sasaran setelah baru menyelesaikan sebagian, atau menyatakan tugas mustahil setelah beberapa kegagalan. Kesalahan pertama adalah batas keputusan ketika ia hendak menyimpulkan tanpa bukti; kegagalan tes dan percobaan ulang berikutnya adalah konsekuensi. Koreksi pengguna, umpan balik negatif, dan audit setelah kejadian dapat menemukan kategori ini.
+
+**Konstruksi data.** Regresi end-to-end menjalankan tes penerimaan tersembunyi ketika Agent menyatakan selesai: lulus mendapat reward positif dan gagal mendapat reward negatif. Regresi trajectory-prefix mengubah klaim terlalu cepat menjadi `rejected`, sedangkan “jalankan tes, periksa setiap syarat penerimaan, lalu simpulkan” menjadi `chosen`. Kandidat dari model guru disaring verifier deterministik; jenis tugas, syarat yang hilang, dan cara menyatakan selesai divariasikan sebelum sebagian kecilnya dicampur dengan data instruksi umum untuk LoRA.
+
+**Evaluasi.** Boundary set untuk tugas yang belum selesai harus dievaluasi bersama retention set untuk tugas yang benar-benar selesai. Yang pertama memeriksa apakah model melakukan verifikasi alih-alih berhenti; yang kedua memastikan model masih dapat menutup tugas secara normal. Tanpa retention set, model dapat menjadi terlalu berhati-hati dan tidak pernah berhenti.
+
+> **Eksperimen 7-17 ★★: Dari bad case selesai terlalu cepat ke DPO**
+>
+> **Tujuan eksperimen**: Menjalankan seluruh alur dari atribusi kegagalan, data regresi trajectory-prefix, pasangan preferensi DPO, pelatihan LoRA model 7B, hingga evaluasi boundary/retention yang terpisah.
+>
+> **Konstruksi data**: Proyek pendamping menyediakan 24 kasus realistis dari empat jenis kegagalan dan held-out set yang saling terpisah (12 boundary dan 8 retention). Ini adalah eksperimen pendidikan; data produksi perlu mencakup lebih banyak keluarga tugas dan memakai tes tersembunyi yang tidak dapat diedit atau sekadar diklaim telah dijalankan oleh model.
+
+### Kasus 2: tanda kutip bahasa Tionghoa
+
+Permintaan “ubah tanda kutip lurus dalam artikel Tionghoa menjadi tanda kutip lengkung” bukan aturan penggantian global. ASCII yang sama dapat muncul dalam prosa Tionghoa, kutipan bahasa Inggris, kode Markdown, blok kode, komentar, JSON, dan path. Prosa serta komentar Tionghoa boleh diubah; kode yang dapat dijalankan, teks Inggris, JSON/schema, path, identifier, dan area ambigu harus dipertahankan.
+
+**Dari bad case ke atribusi.** Harness harus memecah dokumen berdasarkan cakupan, membandingkan keluaran model dengan rentang yang boleh dan yang dilindungi, lalu menjalankan pemeriksaan sintaks Markdown, JSON, dan bahasa sumber. Jika rendering atau serialisasi mengubah input terlebih dahulu, masalahnya berada di Harness. Jika model menerima byte asli tetapi mengubah kutip terlindungi atau melewatkan kutip Tionghoa yang boleh diubah, perbedaan pertama adalah kesalahan pemilihan cakupan yang layak ditangani dengan post-training.
+
+**Konstruksi data.** Sebuah Skill mendefinisikan aturan cakupan positif dan negatif. Sampel memasangkan teks sumber dan target: prosa Tionghoa, kutip bertingkat, dan komentar Tionghoa adalah edit positif; teks Inggris, literal, JSON, path, inline code, dan blok kode adalah negatif yang harus dilindungi. Train, holdout, dan boundary dipisahkan berdasarkan template, genre, kombinasi variabel, dan bahasa; quality gate mesin serta audit manual berstrata dijalankan sebelum SFT.
+
+**Evaluasi.** Laporkan tingkat perubahan kutip target, preservasi area terlindungi, edit non-target, validitas sintaks, dan exact match seluruh teks. Dalam produksi, retention set berisi dokumen yang sudah benar juga diperlukan untuk mendeteksi pengeditan berlebihan.
+
+> **Eksperimen 7-18 ★★: SFT tanda kutip lengkung berbasis cakupan**
+>
+> **Tujuan eksperimen**: Menguji apakah LoRA SFT mengajarkan model mengubah hanya kutip yang diizinkan dan mempertahankan sintaks yang dilindungi pada kombinasi konteks yang belum pernah dilihat.
+>
+> **Konfigurasi dan data**: Qwen3-8B bf16 LoRA selama dua epoch dan 256 update; 16 jenis fragmen, 10 genre artikel, dan 9 bahasa pemrograman; 1.024 train, 256 holdout, dan 256 boundary. Skill dipakai sebagai spesifikasi pelabelan, quality gate, dan regresi, dengan 48 pemeriksaan manual berstrata.
+>
+> **Hasil**: exact holdout naik dari 0% pada model dasar menjadi 96,9%, exact boundary 97,7%, dan preservasi area terlindungi 100%. Python, JavaScript, Java, Go, Rust, SQL, Shell, YAML, dan Markdown mencapai 100%; JSON masih 68,8% dan memerlukan jalur data terstruktur tersendiri.
+
+### Kasus 3: kegagalan edit file yang sering terjadi
+
+Coding Agent biasanya menggunakan `edit_file(path, old_string, new_string)`. Tool mencocokkan `old_string` secara persis; perubahan satu byte saja—spasi, baris baru, backslash, komposisi Unicode, atau token berfrekuensi rendah—menyebabkan “old_string not found”. Percobaan ulang adalah gejala, bukan selalu akar masalah.
+
+**Dari bad case ke atribusi.** Bandingkan perbedaan pertama melalui rantai berikut:
+
+```text
+byte file asli → balasan tool → serialisasi Harness → konteks model
+→ keluaran token model → string hasil decode → parsing JSON/tool-call → pencocokan tool
+```
+
+Perubahan sebelum generasi model diatribusikan ke pembaca file, serializer, atau Harness. Encode→decode tokenizer diaudit secara terpisah. Hanya jika model menerima byte asli dan keluarannya menjadi titik divergensi pertama, kasus tersebut diklasifikasikan sebagai kegagalan penyalinan model dan dikirim ke post-training.
+
+**Konstruksi data.** Gunakan tiga tugas yang dapat diverifikasi: menyalin verbatim, memilih target yang ditandai di antara hard negative yang mirip, dan menempatkan target persis ke field JSON tool `old_string`. Acak panjang, kombinasi token, dan konteks, termasuk spasi, baris baru nyata, escape literal, backslash, karakter Unicode gabungan, bahasa Tionghoa, dan karakter zero-width. Pisahkan split berdasarkan seed, panjang, komposisi token, dan pembungkus konteks.
+
+**Evaluasi.** Pisahkan metrik byte-exact, code-point-exact, token-exact, posisi perbedaan pertama, dan round-trip tokenizer dari keberhasilan tool end-to-end. Jika penyalinan langsung benar tetapi `edit_file` masih gagal, perbaiki serialisasi atau protokol tool, bukan terus melatih model.
+
+> **Eksperimen 7-19 ★★: SFT exact-copy untuk string khusus**
+>
+> **Tujuan eksperimen**: Setelah memastikan bahwa keluaran model adalah lapisan pertama yang berbeda, uji LoRA SFT pada string acak yang belum pernah dilihat dan gunakan audit tokenizer terpisah untuk mengesampingkan artefak tokenisasi.
+>
+> **Konfigurasi dan data**: Qwen3-8B bf16 LoRA selama dua epoch; 1.024 train, 256 holdout, dan 256 boundary untuk `verbatim`, `decoy_copy`, dan `tool_json`. Generator memakai string acak yang dapat direproduksi, hard negative, 10 konteks bahasa, 8 genre artikel, serta spasi khusus, escape, Unicode, bahasa Tionghoa, dan karakter zero-width.
+>
+> **Hasil**: byte-exact holdout meningkat dari 37,5% menjadi 78,9%, boundary mencapai 80,1%, dan rata-rata perbedaan byte pertama adalah 54,0 serta 54,2. Pada 512 probe, round-trip tokenizer Qwen3/Qwen2.5 adalah 80,1%, sedangkan Mistral 100%; kegagalan tokenizer dan Harness harus tetap dipisahkan dari hasil penyalinan model.
+
+
 ## Lanskap Post-Training Lengkap dan Kiat Praktis
 
 Berawal dari tujuan pre-training untuk "memprediksi token berikutnya," bab ini telah menelusuri jalur yang panjang: SFT memantapkan format, RL memajukan generalisasi, task multi-putaran memperkenalkan masalah pembagian kredit (credit-assignment problem), desain reward meluas dari outcome rewards menjadi sinyal jalur (path signals) yang memberikan reward pada hasil sambil membatasi proses, dan penggunaan tool membawa ledakan kombinatorial. Satu utas menembus semua eksperimen ini—apa yang dipelajari model bergantung pada apa yang diajarkan oleh sinyal pelatihan kepadanya, dan kualitas sinyal tersebut terutama ditentukan oleh data dan environment, bukan algoritmanya.
@@ -788,6 +873,8 @@ Esensi dari post-training model adalah menuliskan strategi interaksi ke dalam pa
 
 SFT dan RL bukanlah alternatif yang saling bersaing melainkan tahapan yang berurutan: SFT pertama-tama menstabilkan format output—jika tidak, sinyal reward dari RL tidak dapat dihitung sama sekali—dan kemudian RL belajar untuk menggeneralisasi di atas fondasi tersebut. "SFT menghafal, RL menggeneralisasi" bukanlah sebuah slogan melainkan fenomena yang terukur.
 Dua penilaian terjalin di sepanjang bab ini dan lebih berharga untuk diingat dibandingkan algoritma apa pun. Pertama, **data dan environment lebih penting daripada algoritma**: sekadar tahu cara menggunakan algoritma RL off-the-shelf sudah cukup; apa yang benar-benar membedakan tim-tim yang ada adalah fidelitas environment simulasi dan kualitas data pelatihan. Ketika environment riil tidak dapat dibangun, menggunakan model untuk menyimulasikan environment (menyimulasikan nilai kembalian Tool, menyimulasikan dinamika environment) juga merupakan rute yang layak—tetapi ingatlah bahwa bias dari simulator adalah batas atas pelatihan. Tidak hanya jawaban yang dapat disaring; distribusi task dari data pelatihan itu sendiri dapat menjadi target optimisasi. Dalam banyak skenario, jika data SFT berkualitas cukup tinggi, RL mungkin tidak diperlukan sama sekali. Kedua, **hambatan utama RL saat ini adalah efisiensi sampel**: dua arah yang saat ini tampak paling menjanjikan adalah On-Policy Distillation, yang memadatkan sinyal di setiap langkah, dan penalti jalur yang diverifikasi (verified path penalty) RLVP, yang mengubah feedback environment yang terbuang sia-sia menjadi sinyal yang dapat dipelajari ("beri reward pada hasil, penalti pada jalur," dengan partial credit untuk kemajuan yang dapat dicapai untuk menyelamatkan sampel dalam grup all-fail). Kesamaan dari keduanya adalah gagasan yang sama—mengambil informasi yang sudah ada di dalam environment dan data, yang selama ini disia-siakan oleh outcome rewards, dan mengubahnya kembali menjadi sesuatu yang dapat dipelajari oleh model. Ketika tidak ada guru yang lebih kuat, alur pemikiran ini juga memiliki varian self-distillation: OPSD membiarkan model yang sama mengawasi dirinya sendiri dalam dua peran—sebagai "guru pembaca jawaban" dan "siswa yang hanya melihat masalah"—membawa sinyal padat token-demi-token ke task yang reward-nya tidak dapat diverifikasi.
+
+Bab ini menjawab bagaimana pembaruan parameter dapat mewujudkan evolusi Agent secara berkelanjutan. Pada bab berikutnya, kita akan melihat bahwa parameter hanyalah salah satu dari empat pembawa evolusi mandiri Agent: pengetahuan, instruksi, program, dan parameter.
 
 [^ch7-1]: Schulman, John and Thinking Machines Lab, “LoRA Without Regret”, 2025.
 [^ch7-4]: Ouyang, Long et al., “Training Language Models to Follow Instructions with Human Feedback”, OpenAI, 2022.

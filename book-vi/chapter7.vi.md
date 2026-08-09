@@ -1,5 +1,11 @@
 # Post-training mô hình
 
+> **Cập nhật năm 2026.** Bản sửa đổi làm rõ rằng “SFT ghi nhớ, RL khái quát hóa” là quan sát từ các so sánh có kiểm soát GeneralPoints/V-IRL, không phải quy luật phổ quát. Bản này cũng tách việc mô phỏng kết quả trả về của công cụ khỏi việc mô phỏng động lực của toàn bộ môi trường, đồng thời xem độ lệch của bộ mô phỏng là trần của quá trình huấn luyện.
+>
+> Hai hướng nâng cao hiệu quả mẫu được nhấn mạnh: On-Policy Distillation biến phần thưởng cuối của một rollout thành hướng dẫn theo từng token; RLVP biến phản hồi đường đi vốn bị lãng phí thành tín hiệu có thể học. Khi không có giáo viên mạnh hơn, OPSD dùng thông tin đặc quyền và để cùng một mô hình đóng vai giáo viên lẫn học sinh.
+>
+> Thứ tự thí nghiệm trong bản này: 7-13 SimpleVLA-RL; 7-14 ReTool; 7-15 AWorld-train; 7-16 RLVP.
+
 Công thức cốt lõi của cuốn sách này là Agent = LLM + context + tools. Chương này tập trung vào việc tối ưu hóa "bộ não" của LLM - cho phép mô hình tận dụng tốt hơn ngữ cảnh và công cụ thông qua post-training, từ đó cải thiện khả năng của toàn bộ hệ thống Agent. Cuối Chương 6 đã chỉ ra rằng hệ thống đánh giá và môi trường mô phỏng là hai nền tảng của quá trình post-training: môi trường đánh giá cung cấp nền tảng thực hành cho đào tạo và các chỉ số đánh giá xác định mục tiêu đào tạo. Chương này xây dựng trên hai nền tảng này và thảo luận cách thực sự thay đổi trọng số của mô hình và kết nạp các khả năng thành các tham số.
 
 Chương này dành cho những độc giả chưa có nền tảng về học tăng cường hoặc đào tạo mô hình. Chúng tôi không cho rằng bạn hiểu độ dốc và tối ưu hóa chính sách, nhưng chúng tôi bắt đầu từ chủ đề "cách đào tạo một mô hình" và giải thích rõ ràng mục đích, nguyên tắc và vấn đề mà nó giải quyết ở mỗi bước. Sau khi đọc chương này, bạn sẽ có thể trả lời: Cần bao nhiêu bước để phát triển các khả năng của mô hình, mỗi bước làm gì, tại sao nó phải theo thứ tự này và bạn nên thực hiện bước nào trong dự án của riêng mình.
@@ -292,7 +298,7 @@ Trước khi bắt tay vào làm SFT, có một vấn đề thực tế không t
 >
 > Quá trình chắt lọc có thể được thực hiện theo hai chiều: "lớn đến nhỏ" (thay thế các mô hình lớn bằng các mô hình cỡ nhỏ và vừa để đạt được sự thỏa hiệp giữa chi phí và chất lượng) và "từ suy nghĩ đến không suy nghĩ" (thu gọn CoT rõ ràng thành kiến thức được tham số hóa ngầm ở cùng một quy mô để đạt được tốc độ phản hồi được cải thiện gấp 20-30). Cả hai không xung đột và thường được sử dụng cùng nhau trong môi trường sản xuất. Cần lưu ý rằng việc chắt lọc sẽ kế thừa ranh giới của giáo viên - nếu giáo viên mắc lỗi hệ thống trong phân phối đuôi dài, học sinh sẽ mã hóa thêm các lỗi này; nếu người thầy dựa vào công cụ để đảm bảo tính đúng đắn thì việc chắt lọc đầu ra thuần túy sẽ làm mất đi sự chắc chắn mà công cụ mang lại. Cảm hứng kỹ thuật: Khi hình thức sản phẩm ổn định, việc phân bổ đầu vào có thể dự đoán được và hạn chế về chi phí là rõ ràng, việc chưng cất nhanh chóng là một phương pháp tối ưu hóa tốt; nhưng trong giai đoạn thăm dò hoặc khi nhiệm vụ vẫn chưa được hoàn thành, việc duy trì tư duy rõ ràng và kỹ thuật nhanh chóng có thể chỉnh sửa vẫn là cốt lõi của việc thử và sai nhanh chóng.
 >
-> **Thí nghiệm 7-9 ★★★: Chưng cất chuỗi suy nghĩ (CoT) `[Thử nghiệm mở rộng]`**
+> **Thí nghiệm 7-9 ★★★: Chưng cất chuỗi suy nghĩ (CoT)**
 >
 > Quá trình chắt lọc kịp thời sẽ loại bỏ quá trình tư duy, trong khi quá trình chắt lọc CoT thì ngược lại: chuyển **trajectory tư duy hoàn chỉnh** của mô hình giáo viên mạnh mẽ sang mô hình học sinh. Thực hiện chắt lọc CoT trên mô hình giáo viên có khả năng mạnh mẽ có thể khôi phục 70%-80% khả năng của giáo viên với cùng lượng thông số. Đây là chiến lược đi theo thực tế nhất dành cho các nhóm không tìm cách làm mới ranh giới của các khả năng tiên tiến mà tìm kiếm các mô hình độc lập và có thể kiểm soát được. Một loạt các mẫu chưng cất nhỏ có mã nguồn mở khi DeepSeek-R1 ra mắt (sử dụng tư duy của R1 để tạo ra dòng Qwen và Llama), là đại diện cho lộ trình này.
 >
@@ -312,6 +318,10 @@ Trước khi bắt tay vào làm SFT, có một vấn đề thực tế không t
 >
 
 Bốn thử nghiệm này có một đặc điểm chung - "ghi các ánh xạ và giao thức ổn định thành các tham số": lời nói SFT củng cố giao thức điều khiển kiểu, SFT đa ngôn ngữ củng cố mẫu tổ chức tư duy và chắt lọc SFT củng cố ánh xạ trực tiếp từ đầu vào đến đầu ra. Điểm chung của họ là mục tiêu rõ ràng, hình thức rõ ràng và tiêu chí đánh giá ổn định. Do đó, SFT có thể đạt được lợi ích với hiệu suất mẫu cực cao; nhưng một khi sự phân bố thay đổi, xu hướng bộ nhớ sẽ bộc lộ dưới dạng suy giảm hiệu suất. Đây chính xác là biểu hiện thử nghiệm của sự khác biệt về khái quát hóa bộ nhớ được đề cập trong Phần 7.1 "Sự khác biệt cơ bản giữa SFT và RL".
+
+Các bad case ở Chương 6 cũng có thể trở thành dữ liệu huấn luyện. Với coding agent kết thúc quá sớm, cắt tiền tố trajectory ngay trước khi tuyên bố hoàn thành; tuyên bố đó là rejected, còn “chạy kiểm thử, kiểm tra từng điều kiện nghiệm thu rồi mới kết luận” là chosen. Cách này phù hợp với DPO hoặc minh họa ranh giới quyết định hơn SFT thông thường; lưu nguyên nhân lỗi, điều kiện áp dụng và bộ kiểm tra cùng mẫu.
+
+Cùng các nhiệm vụ đó có thể làm môi trường luyện RL: SFT dùng trajectory đã kiểm chứng, còn RL chạy lại bằng policy hiện tại và để verifier bên ngoài đánh giá. Bad case vì thế là ranh giới cần cải thiện, không chỉ là ví dụ để ghi nhớ.
 
 ## Khi nào nên chọn SFT, khi nào nên chọn RL
 
@@ -409,6 +419,8 @@ Có ba câu hỏi mà người mới bắt đầu thường hỏi về công th�
 **Mối quan hệ giữa RLHF và RLVR.** Tóm lại, sự khác biệt giữa hai lộ trình là **phần thưởng đến từ đâu**: phần thưởng dành cho RLHF đến từ RM đã học (đằng sau là dữ liệu về sở thích của con người) và phần thưởng dành cho **RLVR**(Học tăng cường với Phần thưởng có thể xác minh, học tăng cường phần thưởng có thể kiểm chứng) đến từ trình xác thực quy tắc (kiểm tra có vượt qua hay không, câu trả lời có đúng hay không). Các nhiệm vụ Agent hầu hết có thể kiểm chứng được - đó là lý do tại sao chương này tập trung vào RLVR. Nhưng không có sự đánh đổi nào giữa hai điều này: các mô hình được triển khai thực tế được sử dụng chồng lên nhau, RLHF chịu trách nhiệm về chất lượng đối thoại và căn chỉnh bảo mật, còn RLVR chịu trách nhiệm về lý luận và các khả năng của Agent. Mô hình phần thưởng tổng quát được thảo luận trong "Sự phát triển của Mô hình phần thưởng" sau này có thể được coi là sự kết hợp của hai dòng - sử dụng mô hình phần thưởng có thể đào tạo để thực hiện các nhiệm vụ mở không thể được quy định bởi các quy tắc.
 
 ## So sánh các thuật toán học tăng cường
+
+**GRPO (Group Relative Policy Optimization)** do DeepSeek đề xuất và hiện là một trong những thuật toán được dùng phổ biến nhất trong huấn luyện RL. Ý tưởng cốt lõi là ước lượng advantage tương đối bằng cách so sánh một nhóm rollout cho cùng một bài toán, không cần huấn luyện value network riêng.
 
 Thử nghiệm một vòng trước đó đã chứng minh lợi thế tổng quát hóa của RL. Phần trước cũng đã giới thiệu lộ trình tối ưu hóa ưa thích của RLHF. Tuy nhiên, các thuật toán cụ thể được sử dụng trong các tác phẩm này là khác nhau và chỉ là một phần trong nhiều lựa chọn. Trước khi bước vào các nhiệm vụ nhiều vòng phức tạp hơn, cần phải sắp xếp một cách có hệ thống các đặc điểm và kịch bản áp dụng của các thuật toán chính thống.
 
@@ -527,7 +539,7 @@ Không phải thuật toán không quan trọng chút nào mà vị trí của n
 
 ![Hình 7-15 Phân bổ tín dụng trong nhiều vòng tương tác ](images/fig7-15.svg)
 
-Từ một vòng đến nhiều vòng, có một bước nhảy vọt về chất lượng về độ phức tạp. Policy không chỉ phải lựa chọn hành động tối ưu hiện tại mà còn phải xem xét giá trị trạng thái trong tương lai; không chỉ phải xử lý phản hồi ngay lập tức mà còn thực hiện **Gán tín dụng** dưới phần thưởng bị trì hoãn - xác định bước nào trong chuỗi nhiều bước đóng góp nhiều nhất vào kết quả cuối cùng. Ví dụ: đại diện dịch vụ khách hàng, Agent, đã dành 10 vòng đối thoại để giải quyết vấn đề của người dùng và cuối cùng nhận được lời khen ngợi - nhưng lời khen ngợi này nên được quy cho câu hỏi chính xác ở vòng thứ hai hay cho lời giải thích của bệnh nhân ở vòng thứ bảy? Nhiều vòng cũng gây ra một khó khăn khác: **Observability một phần**(Agent không thể có được trạng thái hoàn chỉnh và phải xây dựng biểu diễn trạng thái tiềm ẩn từ các quan sát lịch sử).
+Từ một vòng đến nhiều vòng, có một bước nhảy vọt về chất lượng về độ phức tạp. Policy không chỉ phải lựa chọn hành động tối ưu hiện tại mà còn phải xem xét giá trị trạng thái trong tương lai; không chỉ phải xử lý phản hồi ngay lập tức mà còn thực hiện **Gán tín dụng** dưới phần thưởng bị trì hoãn - xác định bước nào trong chuỗi nhiều bước đóng góp nhiều nhất vào kết quả cuối cùng. Ví dụ: đại diện dịch vụ khách hàng, Agent, đã dành 10 vòng đối thoại để giải quyết vấn đề của người dùng và cuối cùng nhận được lời khen ngợi - nhưng lời khen ngợi này nên được quy cho câu hỏi chính xác ở vòng thứ hai hay cho lời giải thích của bệnh nhân ở vòng thứ bảy?
 
 Dạng vật lý của tương tác nhiều vòng được thảo luận ở đây chính xác là chu trình ReAct được mô tả trong Chương 1 và 4 - mỗi vòng là sự lặp lại của **Suy nghĩ → Hành động → Quan sát** và độ trễ phần thưởng xuất phát từ hạn chế về cấu trúc rằng "kết quả cuối cùng chỉ có thể được đánh giá sau nhiều vòng."
 
@@ -585,7 +597,7 @@ Phương pháp này có một số ưu điểm chính: khả năng khái quát h
 
 ### Phần thưởng quá trình và phần thưởng kết quả: những lựa chọn chính cho nhiệm vụ nhiều vòng
 
-Ngoài việc phân bổ tín dụng và observability một phần, các nhiệm vụ nhiều vòng còn phải đối mặt với vấn đề phụ thuộc vào khoảng cách xa - tác động của các quyết định ban đầu như đặt mục tiêu phụ và lựa chọn công cụ có thể không rõ ràng cho đến hàng chục bước sau đó. Điều này làm cho thiết kế phần thưởng phải đối mặt với một lựa chọn quan trọng: **Phần thưởng quy trình** đưa ra phản hồi ở mỗi bước, giúp giảm bớt khó khăn trong việc phân bổ tín dụng nhưng gây ra sai lệch thiết kế nhân tạo, có thể hạn chế không gian thăm dò; **Phần thưởng kết quả** chỉ đưa ra phản hồi ở điểm cuối, mang lại sự tự do khám phá tối đa, nhưng độ khó huấn luyện và yêu cầu mẫu cao hơn. Ví dụ, phần thưởng quá trình giống như việc giáo viên sửa bài tập về nhà theo từng câu hỏi, học sinh có thể nhanh chóng biết mình mắc lỗi ở đâu; phần thưởng kết quả giống như chỉ xem kết quả thi cuối kỳ, học sinh có nhiều quyền tự do khám phá phương pháp học tập hơn nhưng phản hồi lại đến rất muộn. Việc thiết kế chức năng khen thưởng có liên quan chặt chẽ đến việc xây dựng môi trường đánh giá được thảo luận trong Chương 6 - môi trường đánh giá tự động chất lượng cao là điều kiện tiên quyết để đào tạo RL.
+Ngoài việc phân bổ tín dụng, các nhiệm vụ nhiều vòng còn phải đối mặt với vấn đề phụ thuộc vào khoảng cách xa - tác động của các quyết định ban đầu như đặt mục tiêu phụ và lựa chọn công cụ có thể không rõ ràng cho đến hàng chục bước sau đó. Điều này làm cho thiết kế phần thưởng phải đối mặt với một lựa chọn quan trọng: **Phần thưởng quy trình** đưa ra phản hồi ở mỗi bước, giúp giảm bớt khó khăn trong việc phân bổ tín dụng nhưng gây ra sai lệch thiết kế nhân tạo, có thể hạn chế không gian thăm dò; **Phần thưởng kết quả** chỉ đưa ra phản hồi ở điểm cuối, mang lại sự tự do khám phá tối đa, nhưng độ khó huấn luyện và yêu cầu mẫu cao hơn. Ví dụ, phần thưởng quá trình giống như việc giáo viên sửa bài tập về nhà theo từng câu hỏi, học sinh có thể nhanh chóng biết mình mắc lỗi ở đâu; phần thưởng kết quả giống như chỉ xem kết quả thi cuối kỳ, học sinh có nhiều quyền tự do khám phá phương pháp học tập hơn nhưng phản hồi lại đến rất muộn. Việc thiết kế chức năng khen thưởng có liên quan chặt chẽ đến việc xây dựng môi trường đánh giá được thảo luận trong Chương 6 - môi trường đánh giá tự động chất lượng cao là điều kiện tiên quyết để đào tạo RL.
 
 Về mặt thuật ngữ, hai phần thưởng này tương ứng với hai loại mô hình phần thưởng: **Mô hình phần thưởng quy trình (PRM)** chấm điểm từng bước suy luận hoặc thực hiện trung gian và tác phẩm tiêu biểu là "Hãy xác minh từng bước" [^ch7-7] của OpenAI - đối với các nhiệm vụ suy luận toán học, PRM được đào tạo bằng chú thích thủ công từng bước tốt hơn đáng kể so với việc giám sát chỉ nhìn vào câu trả lời cuối cùng; **Mô hình phần thưởng kết quả (Mô hình phần thưởng kết quả), ORM)** chỉ đánh giá kết quả cuối cùng. Trình xác thực quy tắc trong RLVR được đề cập ở trên có thể được coi là trường hợp đặc biệt của ORM - thay thế "mô hình tính điểm đã học" bằng các quy tắc xác định.
 
@@ -663,7 +675,7 @@ Tóm lại: **Tín hiệu dày đặc chỉ hữu ích nếu nó có thể bù �
 
 **Mối quan hệ với RLVR (nhân tiện, chỉ ra một điểm khó hiểu).** Chỉ có một sự khác biệt về chữ cái giữa RLVP và RLVR (Học tăng cường với Phần thưởng có thể xác minh) xuất hiện nhiều lần trong chương này, chỉ ra chính xác tính bổ sung: **RLVR xác minh kết quả, RLVP xác minh thêm quy trình**. Khi cả hai được đặt chồng lên nhau, bạn sẽ nhận được tín hiệu huấn luyện tập trung vào cả "hoàn thành công việc" và "làm việc không thường xuyên" - đây chính xác là những gì Agent cần để có thể trực tuyến an toàn.
 
-> **Thí nghiệm 7-14 ★★★: RLVP - kết quả thưởng, lộ trình trừng phạt `[Thử nghiệm mở rộng]`**
+> **Thí nghiệm 7-16 ★★★: RLVP - kết quả thưởng, lộ trình trừng phạt `[Thử nghiệm mở rộng]`**
 >
 > **Mục tiêu thử nghiệm**: Xác minh xem liệu "tín hiệu đường dẫn xác minh + phần thưởng kết quả" có thể một mặt giảm bớt các vi phạm ràng buộc (sử dụng hình phạt) và cải thiện hiệu quả mẫu (sử dụng một phần phần thưởng) mà không làm giảm tỷ lệ thành công của nhiệm vụ hay không.
 >
@@ -685,7 +697,7 @@ Hiện tại có hai tuyến đang hoạt động xung quanh công cụ gọi Ag
 
 Có một chi tiết kỹ thuật khác không thể tránh khỏi với công cụ RL: **Chống mất mát đối với mã thông báo phản hồi môi trường**. Dấu vết lệnh gọi công cụ chứa cả mã thông báo do chính mô hình tạo ra (suy nghĩ, tham số lệnh gọi công cụ) và mã thông báo do môi trường trả về (đầu ra của trình thông dịch mã, kết quả tìm kiếm, phản hồi dịch vụ khách hàng). Cái sau không phải do chính sách tạo ra mà do môi trường đưa ra - nếu chúng cũng được bao gồm trong gradient chính sách, mô hình sẽ được đào tạo để "dự đoán hộp cát sẽ xuất ra gì", điều này không chỉ đi chệch khỏi mục tiêu tối ưu hóa mà còn làm cho quá trình đào tạo không ổn định. Cách tiếp cận tiêu chuẩn là chặn mã thông báo phản hồi môi trường khi tính toán tổn thất và chỉ trả về độ dốc cho mã thông báo do chính mô hình tạo ra. Đây là một trong những điểm kỹ thuật cốt lõi của ReTool (che chắn độ dốc của mã thông báo phản hồi trong thẻ `<interpreter>`) và đó cũng là điều Search-R1 đã nói "che chắn mã thông báo được truy xuất để ổn định quá trình đào tạo". Các khung đào tạo chính thống như verRL và AWorld đã tích hợp sẵn cơ chế này.
 
-> **Thử nghiệm 7-15 ★★★: ReTool - Giải bài toán nâng cao bằng trình thông dịch mã**
+> **Thử nghiệm 7-14 ★★★: ReTool - Giải bài toán nâng cao bằng trình thông dịch mã**
 >
 >
 > ![Hình 7-19 ReTool đan xen tư duy mã văn bản và vòng phản hồi thực thi hộp cát ](images/fig7-19.svg)
@@ -710,7 +722,7 @@ Có một chi tiết kỹ thuật khác không thể tránh khỏi với công c
 >
 > Sự khác biệt về thời gian giữa SFT và RL bắt nguồn từ sự khác biệt về mật độ thông tin: SFT có tín hiệu giám sát cho từng mã thông báo, trong khi RL chỉ nhận được tín hiệu thành công hoặc thất bại cho mỗi tập. Trong quá trình đào tạo thực tế, thời gian dành cho một bước sẽ tăng lên khi độ dài của phản hồi tăng lên và một số phản hồi cực kỳ dài sẽ kéo dài đáng kể toàn bộ chu trình đào tạo.
 >
-> **Thử nghiệm 7-16 ★★★: AWorld-train – Học cách sử dụng các công cụ trong hộp cát**
+> **Thử nghiệm 7-15 ★★★: AWorld-train – Học cách sử dụng các công cụ trong hộp cát**
 >
 >
 > ![Hình 7-20 AWorld-train MCP sandbox đào tạo kiến trúc và hệ sinh thái công cụ ](images/fig7-20.svg)
@@ -760,6 +772,77 @@ So với RLVR, OPSD có hai ưu thế cốt lõi. **Thứ nhất, không còn ph
 
 Dĩ nhiên, ranh giới của mô thức này cũng rất rõ, chủ yếu vì trần năng lực của giáo viên bị khóa ngay trên chính học sinh: **mức lợi ích phụ thuộc vào "thông tin đặc quyền mang lại thêm bao nhiêu năng lực".** Nếu mô hình cầm đáp án cũng không giảng nổi quá trình giải (chẳng hạn đáp án đến từ tìm kiếm vét cạn chứ không phải suy luận có thể diễn giải bằng ngôn ngữ), tự chưng cất sẽ không có nguồn tín hiệu. Nghiên cứu hiện có cũng quan sát thấy các chế độ thất bại của OPSD ngây thơ, ví dụ trong quá trình tự chưng cất mô hình dần đánh mất phong cách tư duy vốn có, cần thêm chính quy hóa để ổn định[^ch7-16]. Ý tưởng "cùng một mô hình, khác ngữ cảnh, làm thầy trò cho nhau" vẫn đang tiến hóa nhanh, nhưng nó đã mở ra một con đường cho tình thế khó khăn phổ biến "không có giáo viên mạnh hơn".
 
+## Từ bad case đến hậu huấn luyện
+
+Phần này quay lại câu hỏi của Chương 6: dữ liệu đánh giá được xây dựng từ bad case trong sản xuất được chuyển thành đầu vào hậu huấn luyện như thế nào? Nhật ký quy lỗi, bài hồi quy end-to-end, bài hồi quy theo tiền tố trajectory và điểm Rubric tương ứng với các cách dùng khác nhau khi huấn luyện.
+
+Bảng 7-4. Ánh xạ dữ liệu đánh giá Chương 6 sang cách dùng trong huấn luyện Chương 7
+
+| Dữ liệu đánh giá Chương 6 | Cách dùng trong huấn luyện Chương 7 |
+|---|---|
+| Bài hồi quy end-to-end có verifier | Nhiệm vụ rollout RL và phần thưởng kiểm chứng được (RLVR); pool lấy mẫu cho RFT |
+| Bài hồi quy theo tiền tố trajectory | Cặp ưu tiên DPO, minh họa SFT cho ranh giới quyết định và state của teacher cho On-Policy Distillation |
+| Nhật ký quy lỗi (bước sai đầu tiên và loại lỗi) | Nhãn âm cho giám sát quy trình (PRM); luật phạt đường đi RLVP |
+| Điểm Rubric đa chiều và gold set do người gán | Các chiều của phần thưởng vector; dữ liệu huấn luyện và hiệu chỉnh GRM |
+
+### Trường hợp 1: Coding Agent kết thúc quá sớm
+
+**Từ bad case đến quy lỗi.** Coding Agent có thể tuyên bố “đã xong” trước khi chạy test, kết thúc một nhiệm vụ nhiều mục tiêu sau khi mới làm xong một phần, hoặc tuyên bố nhiệm vụ bất khả thi sau vài lần thất bại. Lỗi đầu tiên là ranh giới quyết định khi Agent định kết luận mà chưa có bằng chứng; các test thất bại và lần thử lại sau đó chỉ là hệ quả. Phản hồi sửa lỗi của người dùng, phản hồi tiêu cực và audit sau sự kiện đều có thể phát hiện loại lỗi này.
+
+**Xây dựng dữ liệu.** Bài hồi quy end-to-end chạy các acceptance test ẩn khi Agent tuyên bố hoàn thành: pass nhận thưởng dương, fail nhận thưởng âm. Bài theo tiền tố biến tuyên bố sớm thành `rejected`, còn “chạy test, kiểm tra từng điều kiện nghiệm thu rồi mới kết luận” thành `chosen`. Verifier xác định lọc các ứng viên do teacher tạo; sau đó thay đổi loại nhiệm vụ, điều kiện còn thiếu và cách diễn đạt hoàn thành trước khi trộn một tỷ lệ nhỏ vào dữ liệu instruction chung để LoRA.
+
+**Đánh giá.** Boundary set của nhiệm vụ chưa hoàn thành phải được đánh giá cùng retention set của nhiệm vụ thật sự hoàn thành. Tập đầu kiểm tra model có xác minh thay vì dừng sớm hay không; tập sau kiểm tra model vẫn có thể kết thúc bình thường. Nếu thiếu tập sau, model có thể trở nên quá thận trọng và không bao giờ dừng.
+
+> **Thí nghiệm 7-17 ★★: Từ bad case kết thúc quá sớm đến DPO**
+>
+> **Mục tiêu**: Chạy toàn bộ quy trình từ quy lỗi, dữ liệu hồi quy tiền tố, cặp ưu tiên DPO, huấn luyện LoRA cho model 7B đến đánh giá tách biệt boundary/retention.
+>
+> **Dữ liệu**: Dự án kèm theo có 24 case thực tế thuộc bốn loại lỗi và một held-out set không giao nhau (12 boundary, 8 retention). Đây là thí nghiệm mang tính giáo dục; dữ liệu sản xuất cần nhiều họ nhiệm vụ hơn và phải dùng hidden test mà model không thể sửa hoặc chỉ nói rằng đã chạy.
+
+### Trường hợp 2: Dấu ngoặc kép tiếng Trung
+
+Yêu cầu “đổi dấu ngoặc kép thẳng trong bài viết tiếng Trung thành ngoặc cong” không phải là quy tắc thay thế toàn cục. Cùng một ký tự ASCII có thể nằm trong văn xuôi tiếng Trung, trích dẫn tiếng Anh, mã Markdown, code block, comment, JSON hoặc path. Văn xuôi và comment tiếng Trung có thể đổi; code thực thi, văn bản tiếng Anh, JSON/schema, path, identifier và vùng không rõ phải giữ nguyên.
+
+**Từ bad case đến quy lỗi.** Harness phải tách tài liệu theo scope, so sánh output với các span được phép và được bảo vệ, rồi chạy kiểm tra cú pháp Markdown, JSON và ngôn ngữ nguồn. Nếu rendering hoặc serialization thay đổi input trước, lỗi thuộc về Harness. Nếu model nhận đúng byte gốc nhưng sửa quote được bảo vệ hoặc bỏ sót quote tiếng Trung được phép sửa, khác biệt đầu tiên là lỗi chọn scope phù hợp để hậu huấn luyện.
+
+**Xây dựng dữ liệu.** Skill định nghĩa luật scope dương và âm. Mẫu ghép source với target: văn xuôi tiếng Trung, quote lồng nhau và comment tiếng Trung là chỉnh sửa dương; văn bản tiếng Anh, literal, JSON, path, inline code và code block là ví dụ âm cần bảo vệ. Train, holdout và boundary tách theo template, thể loại, tổ hợp biến và ngôn ngữ; trước SFT chạy quality gate tự động và audit thủ công theo tầng.
+
+**Đánh giá.** Báo cáo tỷ lệ đổi quote mục tiêu, tỷ lệ giữ vùng bảo vệ, thay đổi ngoài mục tiêu, tính hợp lệ cú pháp và exact match toàn văn. Trong sản xuất cũng cần retention set gồm tài liệu vốn đã đúng để phát hiện sửa quá tay.
+
+> **Thí nghiệm 7-18 ★★: SFT dấu ngoặc kép cong theo scope**
+>
+> **Mục tiêu**: Kiểm tra LoRA SFT có chỉ đổi quote được phép và giữ nguyên cú pháp được bảo vệ trên các tổ hợp ngữ cảnh chưa thấy hay không.
+>
+> **Cấu hình và dữ liệu**: Qwen3-8B bf16 LoRA, 2 epoch và 256 update; 16 loại fragment, 10 thể loại bài viết và 9 ngôn ngữ lập trình; 1.024 train, 256 holdout, 256 boundary. Skill được dùng làm đặc tả nhãn, quality gate và hồi quy; audit thủ công 48 mẫu theo tầng.
+>
+> **Kết quả**: exact holdout tăng từ 0% ở model gốc lên 96,9%, boundary đạt 97,7% và bảo toàn vùng bảo vệ đạt 100%. Python, JavaScript, Java, Go, Rust, SQL, Shell, YAML và Markdown đạt 100%; JSON còn 68,8% và cần một tuyến dữ liệu cấu trúc riêng.
+
+### Trường hợp 3: Thường xuyên chỉnh sửa file thất bại
+
+Coding Agent thường dùng `edit_file(path, old_string, new_string)`. Tool so khớp `old_string` chính xác, nên chỉ cần đổi một byte—dấu cách, xuống dòng, backslash, tổ hợp Unicode hoặc token hiếm—là nhận “old_string not found”. Việc thử lại là triệu chứng, không nhất thiết là nguyên nhân gốc.
+
+**Từ bad case đến quy lỗi.** So sánh khác biệt đầu tiên theo chuỗi:
+
+```text
+byte file gốc → tool trả về → serialization của Harness → context model
+→ output token → chuỗi decode → parse JSON/tool-call → tool matching
+```
+
+Các thay đổi trước khi model sinh output thuộc về bộ đọc file, serializer hoặc Harness. Audit encode→decode của tokenizer riêng biệt. Chỉ khi model nhận đúng byte gốc và output của nó là điểm khác biệt đầu tiên, case mới được phân loại là lỗi sao chép của model để đưa vào hậu huấn luyện.
+
+**Xây dựng dữ liệu.** Dùng ba nhiệm vụ kiểm chứng được: sao chép nguyên văn, chọn target được đánh dấu giữa các hard negative tương tự và đặt target chính xác vào trường JSON `old_string` của tool. Randomize độ dài, tổ hợp token và context, gồm dấu cách, newline thật, escape literal, backslash, ký tự Unicode tổ hợp, chữ Trung và ký tự zero-width. Tách split theo seed, độ dài, thành phần token và wrapper context.
+
+**Đánh giá.** Tách metric byte-exact, code-point-exact, token-exact, vị trí khác biệt đầu tiên và round-trip tokenizer khỏi thành công end-to-end của tool. Nếu copy trực tiếp đúng nhưng `edit_file` vẫn lỗi, hãy sửa serialization hoặc giao thức tool thay vì tiếp tục huấn luyện model.
+
+> **Thí nghiệm 7-19 ★★: SFT sao chép chính xác cho chuỗi đặc biệt**
+>
+> **Mục tiêu**: Sau khi xác nhận output model là lớp đầu tiên bị sai, thử LoRA SFT trên chuỗi ngẫu nhiên chưa thấy và dùng audit tokenizer riêng để loại trừ ảo giác do tokenization.
+>
+> **Cấu hình và dữ liệu**: Qwen3-8B bf16 LoRA trong 2 epoch; 1.024 train, 256 holdout, 256 boundary cho `verbatim`, `decoy_copy` và `tool_json`. Generator dùng chuỗi ngẫu nhiên tái lập được, hard negative, 10 context ngôn ngữ, 8 thể loại bài viết và các trường hợp space, escape, Unicode, chữ Trung, zero-width.
+>
+> **Kết quả**: byte-exact holdout tăng từ 37,5% lên 78,9%, boundary đạt 80,1%, vị trí khác biệt byte đầu tiên trung bình là 54,0 và 54,2. Trên 512 probe, round-trip tokenizer Qwen3/Qwen2.5 là 80,1%, Mistral là 100%; lỗi tokenizer và Harness phải tách khỏi kết quả sao chép của model.
+
+
 ## Bức tranh hoàn chỉnh và những điểm thực tế post-training
 
 Chương này bắt đầu từ "dự đoán từ tiếp theo" được đào tạo trước và đi một chặng đường dài: SFT định dạng vững chắc, RL vượt qua khái quát hóa, nhiệm vụ nhiều vòng giới thiệu các vấn đề phân bổ tín dụng, thiết kế phần thưởng mở rộng từ phần thưởng kết quả đến tín hiệu đường dẫn của "kết quả khen thưởng, quy trình ràng buộc" và việc sử dụng công cụ mang lại sự bùng nổ tổ hợp. Những thử nghiệm này có một điểm chung - những gì mô hình học được phụ thuộc vào những gì tín hiệu huấn luyện dạy nó; và chất lượng tín hiệu chủ yếu được xác định bởi dữ liệu và môi trường chứ không phải bởi thuật toán.
@@ -789,6 +872,8 @@ Bản chất của post-training mô hình là viết chiến lược tương t�
 
 SFT và RL không cạnh tranh mà tuần tự: SFT trước tiên ổn định định dạng đầu ra (nếu không, tín hiệu phần thưởng của RL hoàn toàn không thể tính được) và RL học cách khái quát hóa trên cơ sở này. "Bộ nhớ SFT, khái quát hóa RL" không phải là một khẩu hiệu, nó là một hiện tượng có thể đo lường được.
 Có hai phán đoán xuyên suốt toàn bộ chương này và đáng được ghi nhớ hơn bất kỳ thuật toán nào. Đầu tiên, **dữ liệu và môi trường quan trọng hơn thuật toán**: Bạn có thể sử dụng thuật toán RL có sẵn. Điều thực sự mở rộng khoảng cách là độ trung thực của môi trường mô phỏng và chất lượng của dữ liệu huấn luyện; khi không xây được môi trường thật, dùng mô hình để mô phỏng môi trường (tổng hợp giá trị trả về của công cụ, mô phỏng động lực môi trường) cũng là một lộ trình khả thi, nhưng hãy nhớ rằng sai lệch của bộ mô phỏng chính là trần của quá trình đào tạo; không chỉ câu trả lời có thể được sàng lọc, chính phân phối nhiệm vụ của dữ liệu huấn luyện cũng có thể trở thành đối tượng tối ưu hóa. Trong nhiều trường hợp, miễn là có chất lượng dữ liệu của SFT, bạn thậm chí không cần thực hiện RL. Thứ hai, **Nút thắt chính hiện tại của RL là hiệu quả mẫu**: On-Policy Chưng cất, khiến mỗi bước trở nên dày đặc hơn và hình phạt đường dẫn xác minh RLVP ("kết quả khen thưởng, đường dẫn phạt" và sử dụng phần thưởng một phần có thể đạt được tiến bộ để giải cứu các mẫu của nhóm bị đánh bại hoàn toàn) biến phản hồi môi trường lãng phí thành tín hiệu có thể học được hiện là hai hướng hứa hẹn nhất. Điểm chung của chúng vẫn là cùng một câu - biến thông tin đã tồn tại trong môi trường và dữ liệu nhưng bị lãng phí bởi phần thưởng kết quả thuần túy thành thứ mà mô hình có thể học được. Khi không có giáo viên mạnh hơn, hướng suy nghĩ này còn có một biến thể tự chưng cất: OPSD cho cùng một mô hình đóng hai thân phận "giáo viên nhìn đáp án" và "học sinh chỉ thấy đề bài" để giám sát lẫn nhau, đưa tín hiệu dày đặc theo từng mã thông báo đến những nhiệm vụ có phần thưởng không thể xác minh.
+
+Chương này trả lời cách cập nhật tham số để Agent có thể tiến hóa liên tục. Ở chương tiếp theo, chúng ta sẽ thấy tham số chỉ là một trong bốn vật mang quá trình tự tiến hóa của Agent: tri thức, chỉ dẫn, chương trình và tham số.
 
 [^ch7-1]: Schulman, John and Thinking Machines Lab, “LoRA Without Regret” , 2025.
 [^ch7-4]: Ouyang, Long et al., “Training Language Models to Follow Instructions with Human Feedback” , OpenAI, 2022.

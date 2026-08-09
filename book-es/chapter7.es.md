@@ -1,5 +1,11 @@
 # Post-entrenamiento de Modelos
 
+> **Revisión de 2026.** La edición revisada aclara que «el SFT memoriza y el RL generaliza» es una observación de las comparaciones controladas GeneralPoints/V-IRL, no una ley universal. También distingue entre simular las respuestas de herramientas y simular la dinámica completa del entorno, y considera el sesgo del simulador como el techo del entrenamiento.
+>
+> Se destacan dos vías para mejorar la eficiencia de muestras: la Destilación en la Política convierte la recompensa final de un rollout en orientación token a token; RLVP convierte la retroalimentación de la trayectoria que normalmente se desperdicia en una señal aprendible. Cuando no existe un profesor más fuerte, OPSD usa información privilegiada y el mismo modelo asume los papeles de profesor y estudiante.
+>
+> Orden de los experimentos en esta edición: 7-13 SimpleVLA-RL; 7-14 ReTool; 7-15 AWorld-train; 7-16 RLVP.
+
 La fórmula central de este libro es Agente = LLM + Contexto + Herramientas. Este capítulo se centra en optimizar el LLM, el "cerebro" del sistema: a través del post-entrenamiento, el modelo aprende a aprovechar el contexto y las herramientas de manera más efectiva, elevando así la capacidad de todo el sistema de Agentes. Al final del Capítulo 6 se señaló que el sistema de evaluación y el entorno de simulación son las dos piedras angulares del post-entrenamiento: el entorno de evaluación proporciona el campo de práctica y las métricas de evaluación definen el objetivo. Este capítulo se construye sobre esas dos piedras angulares y analiza cómo modificar realmente los pesos del modelo para consolidar las capacidades directamente en los parámetros.
 
 Este capítulo está dirigido a lectores sin experiencia previa en aprendizaje por refuerzo o entrenamiento de modelos. No asumimos que entiendas de gradientes o de optimización de políticas; en cambio, explicamos desde cero cómo se entrena un modelo, aclarando el propósito, el principio y el problema que resuelve cada paso. Al terminar de leer este capítulo, deberías poder responder a las siguientes preguntas: en cuántas etapas se forjan las capacidades de un modelo, qué se hace en cada etapa, por qué deben seguir este orden estricto y en qué etapa debes enfocar tus esfuerzos según las necesidades de tu propio proyecto.
@@ -287,7 +293,7 @@ Antes de poner en práctica el SFT, surge una pregunta operativa inevitable: **�
 >
 > La destilación se puede realizar en dos dimensiones: de "grande a pequeño" (usando un modelo mediano o pequeño para reemplazar al grande, equilibrando costo y calidad) y de "pensamiento a no-pensamiento" (plegando la CoT explícita en conocimiento parametrizado implícito a igual escala, logrando un aumento de 20 a 30 veces en la velocidad de respuesta). Ambas dimensiones no son excluyentes y se usan conjuntamente en entornos de producción. Cabe señalar que la destilación heredará los límites del profesor: si el profesor comete errores sistemáticos en distribuciones poco comunes, el estudiante codificará de forma rígida esos errores; si el profesor depende de herramientas para garantizar la precisión, la pura destilación de salidas perderá la robustez aportada por las herramientas. Lección de ingeniería: cuando la forma del producto es estable, la distribución de entrada es predecible y las restricciones de costo son marcadas, la destilación de prompts es un excelente medio de optimización; en fases de exploración o cuando la tarea no está definida, conservar el pensamiento explícito y la ingeniería de prompts editable sigue siendo el núcleo para iterar rápidamente.
 >
-> **Experimento 7-9 ★★★: Destilación de Cadena de Pensamiento (Chain of Thought, CoT) `[Experimento Extendido]`**
+> **Experimento 7-9 ★★★: Destilación de Cadena de Pensamiento (Chain of Thought, CoT)**
 >
 > Si bien la destilación de prompts descarta el proceso de pensamiento, la destilación de CoT hace lo contrario: transfiere la **trayectoria completa de pensamiento** del modelo profesor fuerte al modelo estudiante. Aplicar destilación CoT a un modelo profesor potente permite recuperar entre el 70% y el 80% de su capacidad en un estudiante de igual escala de parámetros. Para equipos que no buscan desplazar el estado del arte pero requieren modelos soberanos y controlables, esta es la estrategia de seguimiento más pragmática. La serie de modelos pequeños destilados publicados junto a DeepSeek-R1 (aplicando SFT sobre series como Qwen y Llama con las trayectorias de R1) representa exactamente esta ruta.
 >
@@ -306,6 +312,10 @@ Antes de poner en práctica el SFT, surge una pregunta operativa inevitable: **�
 > **Criterio de aceptación**: El modelo estudiante destilado muestra mejoras significativas en benchmarks de matemáticas/código respecto a su versión previa, y en sus trayectorias aparecen comportamientos de autorreflexión, retroceso y comprobación al estilo del profesor. Asimismo, se debe tener en cuenta el costo de la destilación: el estudiante heredará los errores sistemáticos del profesor y sus hábitos de pensamiento redundantes (esto último puede optimizarse mediante la idea de AdaptThink del Experimento 7-10).
 
 Estos cuatro experimentos comparten un rasgo común: "escribir mapeos y protocolos estables en los parámetros". El SFT de voz consolida el protocolo de control de estilo, el SFT multilingüe consolida la plantilla de organización del pensamiento, y el SFT de destilación consolida el mapeo directo de entrada a salida. Su punto común es un objetivo claro, un formato preciso y un estándar de evaluación estable, lo que permite al SFT obtener ganancias con una eficiencia de muestra extremadamente alta; sin embargo, al cambiar la distribución, la tendencia a memorizar se manifiesta en una caída de rendimiento. Esta es la plasmación experimental de la división entre memorización y generalización explicada en la Sección 7.1.
+
+Los bad cases del capítulo 6 también pueden convertirse en datos de entrenamiento. Para un agente de código que termina demasiado pronto, se recorta el prefijo de la trayectoria justo antes de declarar la finalización: esa declaración es la acción rechazada y «ejecutar las pruebas, comprobar cada condición de aceptación y luego concluir» es la elegida. Esto encaja mejor con DPO o con una demostración del límite de decisión que con SFT normal. La causa del fallo, las condiciones de aplicación y el verificador deben conservarse junto a cada muestra. `build_preference_data.py`, del experimento 7-17, ofrece una plantilla determinista y una ruta con modelo profesor, manteniendo separados los conjuntos de entrenamiento y evaluación.
+
+Las mismas tareas pueden formar un entorno de práctica para RL: SFT usa trayectorias ya verificadas; RL hace que la política actual repita la tarea y un verificador externo juzgue el resultado. Así, el bad case define el límite de decisión que debe mejorar el modelo, en lugar de ser solo algo que memorizar.
 
 ## Cuándo Elegir SFT y Cuándo Elegir RL
 
@@ -401,6 +411,8 @@ Esta formulación responde a cuatro preguntas habituales:
 **Relación entre RLHF y RLVR.** En resumen, la diferencia entre ambas rutas reside en **de dónde proviene la recompensa**: la recompensa de RLHF proviene de un RM aprendido (basado en datos de preferencia humana), mientras que la de **RLVR** (Reinforcement Learning with Verifiable Rewards) proviene de un verificador basado en reglas (si pasan las pruebas o si la respuesta es correcta). Las tareas de Agentes son en su mayoría verificables, motivo por el cual este capítulo adopta RLVR como hilo principal. Sin embargo, ambos enfoques no son excluyentes sino complementarios: los modelos desplegados en producción los superponen, encargándose RLHF de la calidad de diálogo y seguridad, y RLVR del razonamiento y capacidades del Agente. La evolución hacia modelos de recompensa generativos abordada más adelante representa la convergencia de ambas líneas, utilizando modelos de recompensa entrenables para abordar tareas abiertas no cubiertas por reglas.
 
 ## Comparación de Algoritmos de Aprendizaje por Refuerzo
+
+**GRPO (Group Relative Policy Optimization)** fue propuesto por DeepSeek y hoy es uno de los algoritmos más utilizados en el entrenamiento con RL. Su idea central es estimar la ventaja relativa comparando un grupo de rollouts de un mismo problema, sin entrenar una red de valor independiente.
 
 Los experimentos de un solo turno demostraron las ventajas de generalización del RL, y la sección anterior introdujo la ruta de optimización de preferencias de RLHF. No obstante, los algoritmos específicos utilizados varían. Antes de abordar tareas multiturno más complejas, es necesario repasar sistemáticamente las características y escenarios de aplicación de los principales algoritmos.
 
@@ -513,13 +525,15 @@ No se trata de que el algoritmo carezca por completo de importancia, sino de su 
 
 ## De Un Solo Turno a Multiturno: Asignación de Crédito y Diseño de Recompensa
 
+La «finalización prematura» es un ejemplo concreto. Cuando el modelo dice que terminó, el Harness ejecuta las pruebas de aceptación en un espacio de trabajo aislado que el modelo no puede ver; solo un aprobado recibe recompensa positiva y un fallo recibe recompensa negativa. Las pruebas deben leer archivos o estados reales, no solo la frase «completado». Se separan el conjunto límite de tareas incompletas y el conjunto de reserva de tareas realmente terminadas: el primero mide los finales prematuros y el segundo comprueba que el modelo aún sabe cerrar una tarea normalmente.
+
 ### El desafío central de las tareas multiturno
 
 ![Figura 7-14 Comparación entre RL de un solo turno y RL multiturno](images/fig7-14.svg)
 
 ![Figura 7-15 Asignación de crédito en interacciones multiturno](images/fig7-15.svg)
 
-El paso de un solo turno a multiturno representa un salto cualitativo en complejidad. La política debe seleccionar la acción óptima actual considerando al mismo tiempo el valor de los estados futuros; no solo debe procesar retroalimentaciones inmediatas, sino realizar la **asignación de crédito (Credit Assignment)** bajo recompensas diferidas: determinar cuál paso de una secuencia de múltiples etapas contribuyó en mayor medida al resultado final. Por ejemplo, si un Agente de atención al cliente resuelve el problema de un usuario tras 10 turnos de diálogo y obtiene una calificación positiva, ¿esta calificación se debe a la pregunta precisa del turno 2 o a la explicación paciente del turno 7? El escenario multiturno introduce además la **observabilidad parcial** (el Agente no puede acceder al estado completo y debe construir una representación implícita del estado a partir del historial de observaciones).
+El paso de un solo turno a multiturno representa un salto cualitativo en complejidad. La política debe seleccionar la acción óptima actual considerando al mismo tiempo el valor de los estados futuros; no solo debe procesar retroalimentaciones inmediatas, sino realizar la **asignación de crédito (Credit Assignment)** bajo recompensas diferidas: determinar cuál paso de una secuencia de múltiples etapas contribuyó en mayor medida al resultado final. Por ejemplo, si un Agente de atención al cliente resuelve el problema de un usuario tras 10 turnos de diálogo y obtiene una calificación positiva, ¿esta calificación se debe a la pregunta precisa del turno 2 o a la explicación paciente del turno 7?
 
 La interacción multiturno abordada aquí toma la forma física del bucle ReAct descrito en los Capítulos 1 y 4: cada turno es una iteración de **pensamiento → acción → observación**, derivando la recompensa diferida de la restricción estructural de que "la calidad del resultado final solo se puede evaluar tras múltiples turnos".
 
@@ -577,7 +591,7 @@ Este método aporta varias ventajas clave: fuerte generalización (aprende la me
 
 ### Recompensa de proceso vs Recompensa de resultado: Elección clave en multiturno
 
-Además de la asignación de crédito y la observabilidad parcial, las tareas multiturno afrontan **dependencias de larga distancia**: el impacto de decisiones iniciales (como la fijación de subobjetivos o la selección de herramientas) puede manifestarse decenas de pasos después. Esto plantea una elección crucial en el diseño de recompensas: la **recompensa de proceso** ofrece retroalimentación en cada paso, reduciendo la dificultad de asignación de crédito pero introduciendo sesgos de diseño humano que pueden restringir el espacio de exploración; la **recompensa de resultado** ofrece retroalimentación únicamente en la meta final, otorgando máxima libertad de exploración pero elevando la dificultad de entrenamiento y la demanda de muestras. Análogamente, la recompensa de proceso equivale a un profesor que corrige cada ejercicio de la tarea, permitiendo al estudiante saber rápido dónde erró; la recompensa de resultado equivale a calificar solo el examen final, dando libertad para explorar métodos de estudio pero con retroalimentación diferida. El diseño de la función de recompensa guarda relación estrecha con la construcción de entornos de evaluación del Capítulo 6: un entorno de evaluación automatizado de alta calidad es prerrequisito para el entrenamiento de RL.
+Además de la asignación de crédito, las tareas multiturno afrontan **dependencias de larga distancia**: el impacto de decisiones iniciales (como la fijación de subobjetivos o la selección de herramientas) puede manifestarse decenas de pasos después. Esto plantea una elección crucial en el diseño de recompensas: la **recompensa de proceso** ofrece retroalimentación en cada paso, reduciendo la dificultad de asignación de crédito pero introduciendo sesgos de diseño humano que pueden restringir el espacio de exploración; la **recompensa de resultado** ofrece retroalimentación únicamente en la meta final, otorgando máxima libertad de exploración pero elevando la dificultad de entrenamiento y la demanda de muestras. Análogamente, la recompensa de proceso equivale a un profesor que corrige cada ejercicio de la tarea, permitiendo al estudiante saber rápido dónde erró; la recompensa de resultado equivale a calificar solo el examen final, dando libertad para explorar métodos de estudio pero con retroalimentación diferida. El diseño de la función de recompensa guarda relación estrecha con la construcción de entornos de evaluación del Capítulo 6: un entorno de evaluación automatizado de alta calidad es prerrequisito para el entrenamiento de RL.
 
 En cuanto a terminología, estas dos modalidades corresponden a dos clases de modelos de recompensa: el **Modelo de Recompensa de Proceso (Process Reward Model, PRM)** evalúa cada paso intermedio del razonamiento o ejecución, siendo el trabajo representativo *Let's Verify Step by Step* de OpenAI [^ch7-7] (demostrando en razonamiento matemático que un PRM entrenado con anotaciones paso a paso supera significativamente a la supervisión basada únicamente en la respuesta final); y el **Modelo de Recompensa de Resultado (Outcome Reward Model, ORM)** evalúa únicamente el resultado final. El verificador basado en reglas de RLVR se puede considerar un caso especial de ORM, reemplazando el modelo de puntuación aprendido por una regla determinista.
 
@@ -655,7 +669,7 @@ En resumen: **Las señales densas solo son efectivas cuando aportan la varianza 
 
 **Relación con RLVR.** RLVP y RLVR (Aprendizaje por Refuerzo con Recompensas Verificables) se complementan: **RLVR verifica el resultado y RLVP verifica además el proceso**. Su superposición genera una señal de entrenamiento que atiende a "completar la tarea" y a "hacerlo respetando las reglas", necesario para desplegar Agentes en entornos reales.
 
-> **Experimento 7-14 ★★★: RLVP: Recompensar el Resultado, Penalizar la Ruta `[Experimento Extendido]`**
+> **Experimento 7-16 ★★★: RLVP: Recompensar el Resultado, Penalizar la Ruta `[Experimento Extendido]`**
 >
 > **Objetivo del experimento**: Verificar si la combinación de "recompensa de resultado + señal de ruta verificada" logra reducir las violaciones de restricciones (uso de penalización) y mejorar la eficiencia de muestra (uso de recompensa parcial) sin degradar la tasa de éxito en la tarea.
 >
@@ -677,7 +691,7 @@ Actualmente existen dos rutas activas en RL para herramientas. Una es la **búsq
 
 Existe un detalle de ingeniería indispensable en RL para herramientas: el **enmascaramiento de pérdida (loss masking) sobre la retroalimentación del entorno**. Una trayectoria de llamada a herramientas contiene tokens generados por el modelo (pensamiento, parámetros de herramientas) y tokens retornados por el entorno (salidas del intérprete de código, resultados de búsqueda, respuestas de atención al cliente). Estos últimos no son generados por la política sino dados por el entorno; si se incluyen en el gradiente de política, se entrenaría al modelo para "predecir la salida del sandbox", desviando el objetivo de optimización y desestabilizando el entrenamiento. La práctica estándar consiste en enmascarar los tokens de retroalimentación del entorno al calcular la pérdida, retropropagando gradientes únicamente sobre los tokens generados por el propio modelo. Este es un punto técnico central en ReTool (enmascarando gradientes en tokens dentro de la etiqueta `<interpreter>`) y en Search-R1 ("enmascarar tokens recuperados para estabilizar el entrenamiento"), estando integrado en frameworks de entrenamiento como veRL o AWorld.
 
-> **Experimento 7-15 ★★★: ReTool: Intérprete de Código para Resolver Problemas Matemáticos**
+> **Experimento 7-14 ★★★: ReTool: Intérprete de Código para Resolver Problemas Matemáticos**
 >
 > ![Figura 7-19 ReTool entrelazando texto-código de pensamiento y bucle de retroalimentación de ejecución en sandbox](images/fig7-19.svg)
 >
@@ -700,7 +714,7 @@ Existe un detalle de ingeniería indispensable en RL para herramientas: el **enm
 >
 > La diferencia en tiempo entre SFT y RL proviene de la densidad de información: el SFT posee supervisión en cada token, mientras el RL recibe un único señal de éxito/fracaso por episodio. En el entrenamiento real, el tiempo por paso se incrementa con la longitud de la respuesta, y unas pocas respuestas excesivamente largas pueden prolongar sustancialmente el ciclo global.
 >
-> **Experimento 7-16 ★★★: AWorld-train: Aprender a Usar Herramientas en un Entorno de Pruebas**
+> **Experimento 7-15 ★★★: AWorld-train: Aprender a Usar Herramientas en un Entorno de Pruebas**
 >
 > ![Figura 7-20 Arquitectura de entrenamiento en sandbox MCP de AWorld-train y ecosistema de herramientas](images/fig7-20.svg)
 >
@@ -748,6 +762,77 @@ Frente a RLVR, OPSD presenta dos ventajas centrales. **En primer lugar, no depen
 
 Por supuesto, los límites de este paradigma son claros y derivan de que la capacidad máxima del profesor está acotada por el propio modelo: **la ganancia depende de cuánta capacidad adicional aporta la información privilegiada.** Si el modelo es incapaz de explicar el proceso aun teniendo la respuesta a la vista (por ejemplo, cuando la respuesta se obtuvo por búsqueda por fuerza bruta sin un razonamiento explicable en lenguaje natural), la auto-destilación carece de señal útil. Investigaciones previas han identificado modos de falla en la OPSD ingenua, como la pérdida progresiva del estilo de razonamiento original durante la auto-destilación, requiriendo regularizaciones adicionales para mantener la estabilidad [^ch7-16]. El concepto de "un mismo modelo actuando como profesor y estudiante mediante contextos distintos" continúa evolucionando rápidamente, ofreciendo una vía de solución ante la falta de profesores más fuertes.
 
+## De los bad cases al postentrenamiento
+
+Esta sección retoma la pregunta del capítulo 6: ¿cómo se convierten los datos de evaluación construidos a partir de bad cases de producción en entradas para el postentrenamiento? Los registros de atribución, las regresiones de extremo a extremo, las regresiones de prefijo de trayectoria y las rúbricas tienen usos de entrenamiento distintos.
+
+Tabla 7-4. Correspondencia entre los datos de evaluación del capítulo 6 y sus usos en el capítulo 7
+
+| Datos de evaluación del capítulo 6 | Uso de entrenamiento en el capítulo 7 |
+|---|---|
+| Tarea de regresión de extremo a extremo con verificador | Rollouts de RL y recompensas verificables (RLVR); conjunto de muestreo para RFT |
+| Tarea de regresión de prefijo de trayectoria | Pares de preferencia DPO, demostraciones SFT de límites de decisión y estados del profesor para On-Policy Distillation |
+| Registro de atribución (primer paso erróneo y categoría) | Etiquetas negativas para supervisión de proceso (PRM); reglas de penalización de ruta RLVP |
+| Puntuaciones rubricadas multidimensionales y conjunto dorado humano | Dimensiones de recompensas vectoriales; datos de entrenamiento y calibración para GRM |
+
+### Caso 1: finalización prematura de un Coding Agent
+
+**De bad case a atribución.** Un Coding Agent puede decir «terminado» antes de ejecutar las pruebas, cerrar una tarea con varios objetivos tras completar solo una parte o declarar imposible una tarea después de unos pocos fallos. El primer error es el límite de decisión en el que intenta concluir sin pruebas; los fallos y reintentos posteriores son consecuencias. Las correcciones del usuario, los comentarios negativos y las auditorías posteriores permiten detectar esta categoría.
+
+**Construcción de datos.** Una regresión de extremo a extremo ejecuta pruebas de aceptación ocultas cuando el Agent declara que terminó: aprobar da recompensa positiva y fallar da recompensa negativa. En una regresión de prefijo, la declaración prematura es `rejected` y «ejecutar las pruebas, comprobar cada condición de aceptación y después concluir» es `chosen`. Un verificador determinista filtra las muestras generadas por el profesor; luego se varían los tipos de tarea, las condiciones ausentes y las formas de declarar la finalización antes de mezclar una proporción pequeña con datos generales para LoRA.
+
+**Evaluación.** El conjunto límite de tareas incompletas debe evaluarse junto con un conjunto de reserva de tareas realmente terminadas. El primero comprueba que el modelo verifica en vez de detenerse; el segundo, que todavía sabe cerrar normalmente una tarea. De lo contrario puede volverse demasiado cauteloso y no terminar nunca.
+
+> **Experimento 7-17 ★★: De los bad cases de finalización prematura a DPO**
+>
+> **Objetivo**: ejecutar el flujo completo desde la atribución del fallo hasta los datos de prefijo, los pares DPO, el entrenamiento LoRA de un modelo 7B y la evaluación separada de conjuntos límite y de reserva.
+>
+> **Datos**: el proyecto contiene 24 casos realistas de cuatro tipos y un conjunto held-out disjunto (12 casos límite y 8 de reserva). Es un experimento educativo; en producción hay que cubrir más familias de tareas y usar pruebas ocultas que el modelo no pueda editar ni limitarse a afirmar que ejecutó.
+
+### Caso 2: comillas en chino
+
+Pedir que «las comillas rectas de los artículos chinos se conviertan en comillas curvas» no es una regla de sustitución global. El mismo ASCII puede aparecer en prosa china, citas inglesas, código Markdown, bloques de código, comentarios, JSON o rutas. Se pueden convertir la prosa y los comentarios chinos; el código ejecutable, el texto inglés, JSON/schema, rutas, identificadores y zonas ambiguas deben conservarse.
+
+**De bad case a atribución.** El Harness debe segmentar el documento por ámbito, comparar la salida con los fragmentos permitidos y protegidos y ejecutar comprobaciones de sintaxis Markdown, JSON y del lenguaje fuente. Si el renderizado o la serialización cambia primero la entrada, el problema es del Harness. Si el modelo recibe los bytes originales pero modifica una comilla protegida o no cambia una comilla china permitida, la primera diferencia es un error de selección de ámbito apto para postentrenamiento.
+
+**Construcción de datos.** Una Skill define las reglas positivas y negativas de ámbito. Las muestras emparejan texto fuente y objetivo: prosa china, comillas anidadas y comentarios chinos son ediciones positivas; texto inglés, literales, JSON, rutas, código en línea y bloques de código son negativos protegidos. Los conjuntos train, holdout y boundary se separan por plantillas, géneros, combinaciones de variables e idiomas, con puertas automáticas y auditoría manual estratificada antes del SFT.
+
+**Evaluación.** Se reportan conversión de comillas objetivo, conservación de zonas protegidas, cambios no objetivo, validez sintáctica y exact match del texto completo. En producción también hace falta un conjunto de reserva de documentos ya correctos para detectar ediciones excesivas.
+
+> **Experimento 7-18 ★★: SFT de comillas curvas sensible al ámbito**
+>
+> **Objetivo**: comprobar si LoRA SFT convierte solo las comillas permitidas y conserva la sintaxis protegida en combinaciones de contexto no vistas.
+>
+> **Configuración y datos**: Qwen3-8B en bf16 con LoRA, 2 épocas y 256 actualizaciones; 16 tipos de fragmento, 10 géneros y 9 lenguajes de programación; 1.024 muestras train, 256 holdout y 256 boundary. La Skill sirve como especificación de etiquetas, control de calidad y regresión; se revisan manualmente 48 muestras estratificadas.
+>
+> **Resultados**: el exact del holdout pasa de 0% en el modelo base a 96,9%, el boundary alcanza 97,7% y la conservación de zonas protegidas es 100%. Python, JavaScript, Java, Go, Rust, SQL, Shell, YAML y Markdown llegan al 100%; JSON queda en 68,8% y necesita una vía estructurada independiente.
+
+### Caso 3: fallos frecuentes al editar archivos
+
+Los Coding Agents suelen usar `edit_file(path, old_string, new_string)`. La herramienta compara `old_string` exactamente: basta cambiar un byte —un espacio, salto de línea, barra inversa, composición Unicode o token infrecuente— para obtener «old_string not found». Los reintentos son un síntoma, no necesariamente la causa raíz.
+
+**De bad case a atribución.** Hay que comparar la primera diferencia en esta cadena:
+
+```text
+bytes originales → respuesta de la herramienta → serialización del Harness → contexto del modelo
+→ salida de tokens → cadena decodificada → análisis JSON/tool-call → coincidencia de la herramienta
+```
+
+Los cambios anteriores a la generación pertenecen al lector de archivos, al serializador o al Harness. El round-trip encode→decode del tokenizer se audita por separado. Solo si el modelo recibe los bytes originales y su salida es el primer punto divergente se clasifica el caso como fallo de copia del modelo y se envía a postentrenamiento.
+
+**Construcción de datos.** Se usan tres tareas verificables: copia literal, elección del objetivo marcado entre hard negatives similares y colocación del objetivo exacto en el campo JSON `old_string`. Se aleatorizan longitud, combinación de tokens y contexto, incluyendo espacios, saltos reales, escapes literales, barras inversas, caracteres Unicode combinantes, chino y caracteres de ancho cero. Los splits se separan por semilla, longitud, composición de tokens y envoltorio de contexto.
+
+**Evaluación.** Las métricas de copia byte-exact, code-point-exact, token-exact, posición de la primera diferencia y round-trip del tokenizer deben separarse del éxito extremo a extremo de la herramienta. Si la copia directa es correcta pero `edit_file` falla, hay que reparar la serialización o el protocolo, no seguir entrenando el modelo.
+
+> **Experimento 7-19 ★★: SFT de copia exacta para cadenas especiales**
+>
+> **Objetivo**: tras confirmar que la salida del modelo es la primera capa divergente, probar LoRA SFT con cadenas aleatorias no vistas y descartar artefactos de tokenización mediante una auditoría independiente.
+>
+> **Configuración y datos**: Qwen3-8B bf16 LoRA durante 2 épocas; 1.024 muestras train, 256 holdout y 256 boundary para `verbatim`, `decoy_copy` y `tool_json`. El generador usa cadenas aleatorias reproducibles, hard negatives, 10 contextos lingüísticos, 8 géneros y espacios, escapes, Unicode, chino y caracteres de ancho cero.
+>
+> **Resultados**: el byte-exact del holdout sube de 37,5% a 78,9%, boundary alcanza 80,1% y la primera diferencia media es 54,0 y 54,2. En 512 probes, el round-trip de los tokenizers Qwen3/Qwen2.5 es 80,1%, frente al 100% de Mistral; los fallos del tokenizer y del Harness deben mantenerse separados de los resultados del modelo.
+
+
 ## Panorama Completo del Post-entrenamiento y Puntos Prácticos
 
 Este capítulo ha recorrido un largo camino desde la "predicción del siguiente token" en el pre-entrenamiento: SFT para consolidar formatos, RL para romper barreras de generalización, tareas multiturno con desafíos de asignación de crédito, y el diseño de recompensas evolucionando desde resultados finales hasta señales de ruta que "recompensan el resultado y restringen el proceso", junto con la llamada a herramientas. Estos experimentos comparten un hilo común: lo que aprende el modelo depende de la señal de entrenamiento recibida, y la calidad de dicha señal está determinada principalmente por los datos y el entorno, no por el algoritmo.
@@ -778,6 +863,8 @@ La esencia del post-entrenamiento de modelos es escribir estrategias de interacc
 El SFT y el RL no compiten entre sí, sino que se aplican en secuencia: el SFT estabiliza primero el formato de salida (sin lo cual la señal de recompensa del RL no se puede calcular), y el RL aprende a generalizar sobre esa base. "SFT memoriza, RL generaliza" no es un eslogan, sino un fenómeno medible.
 
 Existen dos valoraciones centrales a lo largo del capítulo que conviene retener sobre cualquier algoritmo. En primer lugar, **los datos y el entorno importan más que los algoritmos**: basta con saber aplicar los algoritmos de RL existentes; la diferencia real la marcan la fidelidad del entorno de simulación y la calidad de los datos de entrenamiento. Cuando no se puede construir un entorno real, utilizar un modelo para simular el entorno (sintetizando valores de retorno o dinámicas del entorno) es una vía factible, recordando que los sesgos del simulador fijan el techo del entrenamiento. Además de filtrar respuestas, la propia distribución de tareas de los datos de entrenamiento se puede convertir en objeto de optimización. En muchos escenarios, si la calidad de los datos de SFT es adecuada, ni siquiera se requiere aplicar RL. En segundo lugar, **el obstáculo principal del RL actual es la eficiencia de muestra**: la Destilación en la Política (On-Policy Distillation), que densifica la señal en cada paso, y la Penalización de Ruta Verificada RLVP ("recompensar el resultado, penalizar la ruta", recuperando muestras mediante recompensas parciales por avance alcanzable), constituyen dos de las direcciones más prometedoras. Su punto común es transformar la información presente en el entorno y los datos, desperdiciada por la recompensa pura de resultado, en señales aprendibles para el modelo. En ausencia de un profesor más fuerte, la auto-destilación OPSD permite que un mismo modelo actúe como profesor (con acceso a la respuesta) y estudiante (viendo solo la pregunta), llevando señales densas token a token a tareas con recompensas no verificables.
+
+Este capítulo responde cómo las actualizaciones de parámetros pueden hacer posible la evolución continua del Agente. En el siguiente capítulo veremos que los parámetros son solo uno de los cuatro soportes de la autoevolución del Agente: conocimiento, instrucciones, programas y parámetros.
 
 [^ch7-1]: Schulman, John y Thinking Machines Lab, "LoRA Without Regret", 2025.
 [^ch7-4]: Ouyang, Long et al., "Training Language Models to Follow Instructions with Human Feedback", OpenAI, 2022.

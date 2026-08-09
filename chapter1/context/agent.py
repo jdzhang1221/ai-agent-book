@@ -379,8 +379,9 @@ class ContextAwareAgent:
         Args:
             api_key: API key for the LLM provider
             context_mode: Context mode for ablation studies
-            provider: LLM provider ('siliconflow', 'doubao', 'kimi', 'moonshot',
-                'deepseek', or 'openrouter')
+            provider: Any provider registered in ``agentbook.providers`` (for
+                example ``dashscope``/``qwen``, ``siliconflow``, ``doubao``,
+                ``kimi``, ``deepseek``, or ``openrouter``)
             model: Optional model override
             verbose: If True, log full HTTP requests and responses (default: True)
         """
@@ -699,6 +700,17 @@ Important: When you have gathered all necessary information and computed the fin
 
         Returns:
             Task execution result
+
+        Result semantics:
+          - ``completed`` means the loop received a non-empty terminal text
+            response. It does not claim that the requested task was correct.
+          - ``task_success`` is ``None`` here because correctness is
+            task-specific and cannot be inferred from arbitrary natural
+            language prompts. Callers with a known rubric should compute it
+            from the final answer and trajectory.
+          - ``success`` is retained as a backwards-compatible alias for
+            ``completed``. New consumers should use ``completed`` or their
+            task-specific ``task_success`` value instead.
         """
         if max_iterations is None:
             try:
@@ -879,7 +891,10 @@ Important: When you have gathered all necessary information and computed the fin
                 return {
                     "error": "Request timed out. The model is taking too long to respond. Try a simpler task or different provider.",
                     "trajectory": self.trajectory,
-                    "iterations": iteration
+                    "iterations": iteration,
+                    "completed": False,
+                    "task_success": False,
+                    "success": False,
                 }
             except Exception as e:
                 logger.error(f"Error during task execution: {str(e)}")
@@ -896,19 +911,29 @@ Important: When you have gathered all necessary information and computed the fin
                     return {
                         "error": "Request timed out. The model is taking too long to respond. Try a simpler task or different provider.",
                         "trajectory": self.trajectory,
-                        "iterations": iteration
+                        "iterations": iteration,
+                        "completed": False,
+                        "task_success": False,
+                        "success": False,
                     }
                 return {
                     "error": str(e),
                     "trajectory": self.trajectory,
-                    "iterations": iteration
+                    "iterations": iteration,
+                    "completed": False,
+                    "task_success": False,
+                    "success": False,
                 }
-        
+        completed = bool(final_answer and str(final_answer).strip())
         return {
             "final_answer": final_answer,
             "trajectory": self.trajectory,
             "iterations": iteration,
-            "success": final_answer is not None,
+            "completed": completed,
+            "task_success": None,
+            # Backwards-compatible alias. This is terminal-response status,
+            # not a correctness judgment.
+            "success": completed,
             "provider": self.provider,
             "model": self.model,
             "base_url": self.base_url,
