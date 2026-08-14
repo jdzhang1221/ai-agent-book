@@ -6,7 +6,7 @@ La razón radica en que un modelo desplegado no modifica automáticamente sus pa
 
 Existe una distinción que suele causar confusión: **guardar experiencias no es lo mismo que aprender de ellas**. Colocar cien trayectorias en un contexto largo o en una base de datos vectorial ayuda a que el modelo recupere un caso cuando lo necesite, pero no realiza automáticamente una comparación entre casos: qué pasos se repiten en las trayectorias exitosas, qué prácticas solo funcionaban en versiones antiguas de las interfaces, o si un éxito particular derivó de una estrategia correcta o de la casualidad del entorno. El aprendizaje ocurre después de que el sistema realiza activamente la "evaluación, contraste, inducción y verificación", y no en el instante en que el registro se escribe en el disco. La memoria de usuario del Capítulo 3 consolida principalmente "cómo son el usuario y el mundo"; el aprendizaje de experiencia de este capítulo profundiza en "bajo qué condiciones se debe actuar de qué manera". La primera permite que el Agente recuerde más, mientras que el segundo hace que pase de ser inteligente a ser experto.
 
-Entonces, ¿por qué no permitir que el modelo se entrene directamente a sí mismo tras cada tarea? Porque los entornos de producción rara vez proporcionan señales de aprendizaje limpias. Que el usuario esté satisfecho no garantiza el cumplimiento normativo, y que los tests pasen puede deberse simplemente a que se eliminaron los casos de prueba fallidos; además, una actualización local puede causar olvido de capacidades, deriva de estrategia o degradación de seguridad. Si se permite que un modelo en ejecución modifique directamente sus parámetros basándose en retroalimentación no verificada, las experiencias erróneas y la inyección de prompts podrían consolidarse y amplificarse continuamente en tareas posteriores. El entrenamiento periódico del modelo base puede mejorar las capacidades generales, pero no puede absorber a tiempo las reglas privadas, cambios de herramientas y experiencias locales con las que cada Agente se topa a diario.
+Entonces, ¿por qué no permitir que el modelo se entrene directamente a sí mismo tras cada tarea? Porque los entornos de producción rara vez proporcionan señales de aprendizaje limpias. La satisfacción del usuario no implica cumplimiento normativo; las actualizaciones locales de parámetros también pueden causar olvido de capacidades, deriva de estrategia o degradación de la seguridad. Si se permite que un modelo en ejecución modifique directamente sus propios parámetros basándose en retroalimentación no verificada, las experiencias erróneas y la inyección de prompts podrían consolidarse y amplificarse continuamente en tareas posteriores. Por otro lado, el entrenamiento periódico de los modelos base puede mejorar las capacidades generales, pero no puede absorber a tiempo las reglas privadas, los cambios de herramientas y las experiencias locales con las que cada Agente se encuentra a diario.
 
 Por lo tanto, mientras el modelo en sí no pueda aprender de forma continua y confiable, se debe estructurar el "aprendizaje" como un sistema autónomo periférico al modelo: registrar evidencia de ejecución, verificar resultados y procesos, extraer patrones comunes de múltiples trayectorias y decidir si se deben actualizar conocimientos, instrucciones, programas o parámetros del modelo. Todas las modificaciones forman primero versiones candidatas que, tras pasar pruebas de regresión y verificaciones de seguridad, pueden cambiar la siguiente ronda de ejecución. Esto no reemplaza la capacidad de aprendizaje del modelo, sino que constituye una ruta de ingeniería para dotar al Agente de capacidad de aprendizaje continuo bajo las condiciones tecnológicas actuales.
 
@@ -25,6 +25,19 @@ Los resultados de algunas tareas son relativamente fáciles de verificar. Un Cod
 Muchas tareas no tienen una única respuesta correcta. Determinar si un agente de atención al cliente fue paciente, si ofreció alternativas dentro del margen normativo, si un informe de investigación captó la evidencia clave o si el texto generado es natural y conciso requiere un juicio contextual. En estos casos se puede utilizar el LLM-as-a-Judge introducido en el Capítulo 6, pero no se debe permitir que el juez emita únicamente una puntuación global vaga. Un enfoque más efectivo consiste en definir previamente una rúbrica de evaluación (Rubric), exigir que el verificador puntúe elemento por elemento, cite evidencia de la trayectoria y declare explícitamente su incertidumbre cuando la evidencia sea insuficiente.
 
 La Figura 8-2 ilustra una estructura de verificación de tres capas. El verificador de resultados de la capa inferior lee los resultados de las pruebas, el estado de la base de datos y los retornos de las herramientas, respondiendo a la pregunta de "si el asunto realmente se completó"; el verificador de procesos de la capa intermedia comprueba las reglas de negocio, los permisos y las secuencias de acciones, respondiendo a "si se completó de la manera permitida"; el verificador de calidad de la capa superior evalúa el lenguaje y la estrategia según la Rubric, respondiendo a "si se completó de forma adecuada". Cuanto más abajo se encuentre el indicador, más debe depender del código y de la verdad de entorno, dejando al modelo de lenguaje únicamente la parte difícil de formalizar.
+
+**Verificación de trayectoria en tres capas:**
+
+```python
+outcome = verify_environment_state(trajectory)
+process = verify_actions_and_permissions(trajectory)
+quality = judge_with_rubric(trajectory, cite_evidence = true)
+
+if not outcome.pass or not process.pass:
+    reject_as_learning_example(outcome, process, quality)
+else:
+    emit_structured_diagnosis(outcome, process, quality)
+```
 
 ![Figura 8-2: Verificación de trayectoria de tres capas desde resultados ambientales hasta una Rúbrica de LLM](images/fig8-2.svg)
 
@@ -76,6 +89,19 @@ Tabla 8-2 Límites aplicables de los cuatro métodos de evolución continua
 | Prompt y Skill | Principios de juicio y normas operativas verbalizables | Interpretable, alcance de acción controlable | Propenso a sobrecarga, conflictos u omisiones |
 | Programa y Harness | Procesos deterministas, herramientas y restricciones fuertes | Evaluable, ejecución estable, bajo costo | Costo de desarrollo y mantenimiento relativamente alto |
 | Parámetros del modelo | Percepción de alta dimensión, estilo de generación y estrategias implícitas | Alta capacidad de generalización, bajo costo de inferencia | Alto costo de actualización y prueba de regresión |
+
+**Enrutamiento de experiencia a capacidad:**
+
+```python
+if experience.is_factual and experience.has_sources:
+    target = KNOWLEDGE
+elif experience.can_be_expressed_as_contextual_language_rule:
+    target = PROMPT_OR_SKILL
+elif experience.is_deterministic or experience.is_hard_safety_constraint:
+    target = PROGRAM_OR_HARNESS
+else:
+    target = MODEL_PARAMETERS
+```
 
 ### Consolidación de la Experiencia en Conocimiento
 
@@ -270,6 +296,20 @@ Esta elección también puede cambiar con el aumento de la experiencia. Una estr
 
 Todas las modificaciones producen primero capacidades candidatas o Agentes candidatos, en lugar de sobrescribir directamente la versión de producción. Los documentos de conocimiento deben verificar si tras su recuperación mejoran el rendimiento en nuevas tareas, los Prompts y Skills deben comprobar casos límite y regresiones en tareas antiguas, los programas deben ejecutar pruebas en sandboxes y entornos restablecidos, y las actualizaciones de parámetros deben comprobar olvidos, seguridad y tareas fuera de distribución. Tras aprobar la validación, se debe utilizar un despliegue gradual (canary) para observar el tráfico real; si los indicadores clave se deterioran, se revierte automáticamente a la versión segura conocida.
 
+**Publicación validada y rollback:**
+
+```python
+candidate = propose_minimal_update(evidence, current_version)
+
+if not verify(candidate, boundary_set): reject(candidate)
+elif not verify(candidate, retention_set): reject(candidate)
+elif not verify(candidate, safety_set): reject(candidate)
+else:
+    canary = deploy_to_small_traffic(candidate)
+    if canary.metrics_regress: rollback(current_version)
+    else: promote(candidate)
+```
+
 La validación requiere además distinguir entre dos capacidades que suelen confundirse. La **capacidad de actualización del Harness** (harness-updating) consiste en generar modificaciones duraderas y valiosas a partir de trayectorias; la **capacidad de beneficio del Harness** (harness-benefit) es la capacidad del Agente de tareas para encontrar, activar y utilizar correctamente dichas modificaciones en ejecuciones posteriores. Una Skill en sí misma puede estar redactada de forma impecable, pero un modelo de tareas más débil podría no cargarla en el escenario adecuado, o ser incapaz de seguirla a largo plazo tras cargarla, haciendo en cualquiera de los casos que el resultado final parezca "sin evolución". Por lo tanto, no se debe utilizar únicamente la puntuación de extremo a extremo para deducir la calidad del actualizador. Los experimentos de reemplazo de modelos de Lin et al. demostraron que la relación entre estas dos capacidades y la capacidad del modelo base no es idéntica[^harness-benefit-2026]; la relación de fortaleza específica requiere mayor verificación en tareas, pero evaluar ambas de forma separada constituye un método de aplicación general.
 
 Tabla 8-3 Métricas de evaluación por capas para la evolución continua
@@ -329,6 +369,17 @@ Un ciclo típico de aprendizaje durante el sueño consta de cinco pasos:
 3. **Recolección y consolidación**: Buscar nuevas señales en las trayectorias evaluadas recientemente, fusionar contenidos duplicados, marcar conflictos y condiciones de aplicación, priorizando la generación de parches locales;
 4. **Validación y aprobación**: Evaluar los candidatos en conjuntos de transferencia, retención y seguridad, registrando escrituras de alto riesgo a la espera de aprobación humana;
 5. **Poda e indexación**: Actualizar los índices de búsqueda, marcando capacidades no utilizadas durante mucho tiempo o refutadas por nueva evidencia como expiradas, archivadas o eliminadas, conservando simultáneamente fuentes y versiones de reversión.
+
+**Consolidación durante el tiempo de inactividad:**
+
+```python
+while sleep_gate_is_open():
+    batch = load_new_evaluated_trajectories()
+    proposals = consolidate(batch, current_capabilities)
+    for proposal in proposals:
+        validate_canary_and_promote_or_rollback(proposal)
+    prune_stale_entries_but_keep_provenance()
+```
 
 La memoria de usuario es el ejemplo más intuitivo, pero debe distinguirse de la experiencia de acción. La memoria automática de Claude Code mantiene un índice `MEMORY.md` y archivos detallados divididos por tema para cada proyecto; al iniciar la sesión solo se carga un prefijo acotado del índice, leyéndose el resto del contenido bajo demanda; cuando el índice se aproxima al límite superior, el sistema exige al Agente fusionar o retirar detalles. Esto demuestra que la memoria de texto plano también requiere restricciones de capacidad, carga por capas y sistematización activa, aunque los mecanismos públicos actuales escriben continuamente durante la sesión y no se pueden equiparar simplemente a una tarea fija de fondo nocturno[^claude-code-memory].
 

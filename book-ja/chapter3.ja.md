@@ -20,7 +20,7 @@
 
 具体的な例でこのプロセスを理解しましょう。ユーザーと Agent の間に次のような対話があったとします。
 
-```
+```text
 User: Help me book a flight to Tokyo next Friday. I prefer window seats
       and I'm vegetarian, so I'll need a special meal.
 Agent: I'll search for flights to Tokyo for next Friday...
@@ -32,12 +32,27 @@ User: Yes, and use my United MileagePlus number 12345678.
 
 この対話が終わると、Agent フレームワークは専用の LLM を一度呼び出して対話内容を分析し、長期的に記憶する価値のある情報を抽出します。
 
-```
+```text
 Extracted memories:
 - User prefers window seats (preference)
 - User is vegetarian, needs special meals on flights (dietary restriction)
 - User's United MileagePlus number: 12345678 (loyalty program)
 - User has travel plans to Tokyo (recent activity)
+```
+
+**メモリのライフサイクル:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
 ```
 
 この抽出プロセスには、いくつかの重要な特徴があります。
@@ -127,50 +142,74 @@ Agent が現在のタスクを効率的に処理でき、かつセッション�
 
 以下は簡略化した例です。構造化段階はユーザーのパスポートと旅程を型付きの状態として格納します。
 
-```python
-from datetime import date
+**追記専用ログとチェックポイント:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-    # ... 其余行程
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**型付きユーザー状態:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 型付きの状態があれば、これまで LLM が「テキストを一度読んで暗算する」しかなかった 3 つのことが、今やすべて決定論的なコードになります。
 
 その一、**集計統計**。「私は去年何回海外へ出たか？」——テキスト記憶ではすべての旅程を思い出して一つずつ数える必要があり、記録が増えるほど誤りやすくなります。一方 User as Code では 1 行の式で済み、正解率はほぼ 100% です[^uac]。
 
+**決定的集約:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 その二、**衝突の発見**。「現在の服薬」と「アレルギー歴」の 2 つの状態を並べれば、1 つの関数で薬物カテゴリごとに突き合わせ、異なる対話に散らばっていてテキスト形式ではほぼ自動的に関連付けられない矛盾を見つけ出せます。
 
+**競合検出:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"用药冲突：{med.name} 属于 {med.drug_class} 类，"
-                       f"而患者对 {allergy.allergen} 严重过敏")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 その三、**制約の強制**。Agent はこのようなチェック関数を固定化し、状態が更新されるたびに自動的にトリガーできます。ユーザーが口に出す必要も、検索する必要もなく、能動的に注意喚起できるのです。たとえばパスポートの有効期限の制約なら、海外行程の出発日がパスポートの失効まで 180 日を切ったら警告します。
 
+**制約の適用:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"护照 {passport.expiry_date} 到期，距 {trip.destination} "
-                       f"行程仅剩 {days} 天，请尽快续办")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: ユーザー記憶を実行可能コードのエンジニアリングとして構築する完全な設計と評価は、Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026 を参照。
@@ -297,6 +336,21 @@ answer = llm.generate(system="你是客服助手。", context=results, question=
 
 検索器の品質が RAG の効果を直接決めます。関連する断片を検索できなければ、LLM がいくら強くても無い袖は振れません。本節ではまず文書が知識ベースに入る最初の工程——分割（チャンキング）——を見て、次に検索器の 2 大技術路線に重点を置きます。密ベクトル埋め込み（意味理解に基づく）と疎ベクトル埋め込み（キーワードマッチングに基づく）、そして両者をどう組み合わせるか、です。
 
+**ハイブリッド RAG パイプライン:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
 
 ![図3-5 RAG のクエリフロー：検索、拡張、生成](images/fig3-5.svg)
 
@@ -378,9 +432,15 @@ $$\text{TF-IDF}(t, d) = \text{TF}(t, d) \times \text{IDF}(t), \qquad \text{IDF}(
 
 BM25（Okapi BM25）は、この 2 つの制約に対する古典的な修正とみなせます。稀な単語を重くする IDF は保ちつつ、単語頻度の飽和と文書長の正規化を加えます。
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-ここで、$q_i$ はクエリ中の単語、$|D|$ は文書長、$\text{avgdl}$ はコーパスの平均文書長です。図 3-8 に示すように、$k_1$ は単語頻度が飽和する速さを制御し、出現が増えるほど追加の寄与を小さくします。$b$ は文書長正規化の強さを制御し、長さの異なる文書をより公平に比較できるようにします。そのため、10 回の出現は通常、5 回のちょうど 2 倍にはならず、同じ TF でも長い文書では重みが小さくなります。具体的なパラメータと計算は実験 3-5 で扱います。
+ここで、$q_i$ はクエリ中の単語、$|D|$ は文書長、$\text{avgdl}$ はコーパスの平均文書長です。$\text{IDF}_{\text{BM25}}$ に添字が付いているのは、これが上の TF-IDF の $\text{IDF}$ と同じ式ではないからです。BM25 はより頑健な変種に切り替えています。
+
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
+
+直感は「稀な単語ほど重みが大きい」ままで変わらず、変わったのは測り方だけです。分子が文書総数 $N$ ではなく「その単語を含まない文書数」$N - \text{DF}(t)$ になり、この比は「その単語を含まない文書が、含む文書の何倍あるか」を直接表します。さらに分子と分母に 0.5 を足して平滑化することで、$\text{DF}(t)$ が 0 と $N$ という両極端の場合でも式が定義されたままになります。代償として、単語が半数を超える文書に現れる場合（$\text{DF}(t) > N/2$）は重みが負になるため、実装では通常下限を設けます。この形は確率的検索モデルに由来し、文献では Robertson–Spärck Jones 重みと呼ばれます。
+
+図 3-8 に示すように、$k_1$ は単語頻度が飽和する速さを制御し、出現が増えるほど追加の寄与を小さくします。$b$ は文書長正規化の強さを制御し、長さの異なる文書をより公平に比較できるようにします。そのため、10 回の出現は通常、5 回のちょうど 2 倍にはならず、同じ TF でも長い文書では重みが小さくなります。具体的なパラメータと計算は実験 3-5 で扱います。
 
 
 ![図3-8 BM25 のスコアリング機構](images/fig3-8.svg)
@@ -390,7 +450,7 @@ $$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(
 >
 > 疎検索の内部の働きを明らかにするため、`sparse-embedding` プロジェクトは教育的な形で、BM25 アルゴリズムに基づく疎ベクトル検索エンジンをゼロから実装しています。プロジェクトの核心的な価値は性能の極限的な最適化ではなく、プロセスの完全な透明化にあります。豊富なログと可視化インターフェースによって、文書のインデックス化の全過程を明瞭に観察できます。テキストの前処理（分かち書き、そして「的」「了」のようなほとんど検索価値を持たないストップワードの除去）、転置インデックスの構築、TF 値と IDF 値の計算です。転置インデックス（Inverted Index）とは、単語から文書への逆向きの写像表のことです。通常のインデックスは「文書を与え、それが含む単語を列挙する」ものですが、転置インデックスは逆に「1 つの単語を与え、それを含むすべての文書を即座に見つける」ものです。ちょうど本の巻末の用語索引ページのようなものです。「TCP」を引くと、45、112、203 ページでこの単語に言及していると教えてくれます。
 >
-> クエリ時にはログが BM25 の各ステップの計算を詳細に示します。やはりクエリ「モデル蒸留」を例にとります。以下はプロジェクト付属の小型のサンプルコーパス（計 N=10 篇の文書）上での実行ログで、そのためヒット件数は先の 100 篇の記事の想定シーンよりずっと少なくなります。読者が手計算で再現しやすいよう、例では BM25 パラメータを k1=1.5、b=0.75、平均文書長 avgdl=250 語に固定しています。IDF は標準形 IDF=ln((N−df+0.5)/(df+0.5)) を採り、df はその単語を含む文書数です。
+> クエリ時にはログが BM25 の各ステップの計算を詳細に示します。やはりクエリ「モデル蒸留」を例にとります。以下はプロジェクト付属の小型のサンプルコーパス（計 N=10 篇の文書）上での実行ログで、そのためヒット件数は先の 100 篇の記事の想定シーンよりずっと少なくなります。読者が手計算で再現しやすいよう、例では BM25 パラメータを k1=1.5、b=0.75、平均文書長 avgdl=250 語に固定しています。IDF は上記 BM25 の形 IDF=ln((N−df+0.5)/(df+0.5)) を採り、df はその単語を含む文書数です。
 >
 > ```
 > 查询分词: ["模型", "蒸馏"]
@@ -469,9 +529,9 @@ $$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(
 
 **事例一：黒猫白猫の計数問題**。第 2 章で私たちは黒猫白猫の計数の例を使って「アテンションはソフト検索であり、統計系の情報は事前に抽出しておく必要がある」ことを説明しました。100 個の事例をすべてコンテキストウィンドウに詰め込んでも、モデルは正確な計数を完遂しにくいのです。同じ問題が知識ベースの尺度で再び現れ、しかもいくつかの新しい障害が重なります。知識ベースに 100 個の独立した事例文書（黒猫 90 匹、白猫 10 匹、各々が独立したテキストチャンク）があり、ユーザーが「比率はいくつ？」と尋ねたとします。まず **top-k の切り捨て**です。top-k（20 など）の制限を受け、大部分の事例はそもそも検索されません。次に**検索スコアのばらつき**です。k 値を上げても、個々の記述がまちまちなため検索スコアにばらつきがあり、一部の事例は依然として取りこぼされます。最も根本的なのは**文書をまたぐ集計**のずれです。統計系の問題は「すべての文書を数え尽くす」ことを要しますが、検索の本性は「最も関連する数個を見つける」ことであり、両者は本質的に矛盾します。モデルは不完全なサンプル（黒猫 15 匹と白猫 3 匹しか見ていないなど）に基づいて誤った結論を出すしかありません。もし事前に要約「合計 100 匹の猫：黒猫 90 匹（90%）と白猫 10 匹（10%）」を生成してインデックスしておけば、一度の検索で正確な情報を得られます。
 
-**事例二：Xfinity の優待ルールの誤った推論**。3 つの孤立した過去の事例。退役軍人の John は優待の申請に成功し、医師の Sarah は割引を得て、教師の Mike は条件に合わないと告げられました。看護師が尋ねたとき、検索器は「看護師」が「医師」と意味的に近いため事例 B を優先的に取り戻し、モデルは看護師も優待を受けられると誤って推論します。検索器は事例 C（他の職業は条件に合わないと説明する）を同時に取り戻せませんでした。さらに悪いことに、「看護師」は事例 A「退役軍人」との意味的類似度が低く、その事例は順位が後ろになって無視される可能性があり、ルールの理解が依然として一面的になります。もし事前にルール「Xfinity の優待は退役軍人と医師にのみ適用され、他の職業は条件に合わない」を抽出してインデックスしておけば、どんな職業を尋ねられても一度の検索で完全なルールを得られます。
+**事例二：Xfinity の優待資格の境界問題**。今度の知識ベースはカスタマーサポートの問い合わせ記録で、数百件のチケットがそれぞれ実際の処理結果を 1 件ずつ記録しています。退役軍人の John は審査を通過し、医師の Sarah は割引を得て、教師の Mike は条件に合わないと告げられた……各チケットは一つの個別事例の結論を書いているだけで、資格の範囲そのものを書いたものは 1 件もありません。看護師が「私は優待を受けられますか」と尋ねたとき、やはり障害がいくつも重なります。まず**最近傍バイアス**です。「看護師」は「医師」と意味的に最も近いため Sarah のチケットが先頭に並び、モデルはその流れで看護師も受けられると推論します。もし Mike のチケットがたまたま上位に来ていれば、同じ質問が正反対の答えを得たはずです。**答えを決めるのはどのチケットがクエリに最も近いかであって、ポリシーそのものではありません**。次に**境界の意味の欠落**です。この障害は k を大きくしても解決しません。「〜に限り、その他は一律に適用しない」という全称と否定を伴う境界は、どの単一のチケットにも存在せず、コーパス全体の閉包の中にしか存在しないからです。チケット庫はそもそも「看護師は該当するのか」に答えておらず、数件の個別事例からモデルに全称規則を無理やり帰納させても、その結論はもともと成り立ちません。最後に**完全性のシグナルの欠落**です。モデルは自分がすでに全体を見たかどうかを判断できないため、問い返すこともなく、手元の数件だけで自信を持って答えてしまいます。解決策はやはりインデックス段階にあります。オフラインでチケット庫全体を通読し、公式の資格ポリシーを拠り所として（検索できた数件の個別事例から外挿するのではなく。それこそが後述する知識汚染です）、ルールカードを 1 枚抽出するのです。「Xfinity の優待は現役および退役の軍人と、看護師を含む有資格の医療従事者に適用される。教師などその他の職業には適用しない。明記されていない職業は人手による確認に回す」。境界とフォールバックを書き切ってしまえば、どの職業を尋ねられても一度の検索で完全なルールが得られます。モデルはもはや帰納する必要がなく、照合するだけで済みます。
 
-この 2 つの事例は核心的な問題を深く明らかにします。**単純な RAG のやり方、すなわち生の事例や文書を処理せずそのまま知識ベースに入れるだけでは、まったく不十分だ**ということです。外部のベクトルデータベースに格納して検索でコンテキストに注入するにせよ、長いコンテキストに直接置くにせよ、知識の抽出と構造化の前処理を経ていなければ、モデルはこれらの情報を効率的かつ確実に活用できません。モデルのアテンション機構は本質的に類似度に基づくソフト検索システムであり、能動的に要約・帰納し知識の階層を構築する思考エンジンではありません。したがってインデックス段階で計算資源を投じ、生の知識に対して能動的な抽出、抽象、構造化を行わなければなりません。「100 個の個別事例」を統計的な要約に圧縮し、「3 つの孤立した事例」を明確なルールに抽出するのです。
+この 2 つの事例は核心的な問題を深く明らかにします。**単純な RAG のやり方、すなわち生の事例や文書を処理せずそのまま知識ベースに入れるだけでは、まったく不十分だ**ということです。外部のベクトルデータベースに格納して検索でコンテキストに注入するにせよ、長いコンテキストに直接置くにせよ、知識の抽出と構造化の前処理を経ていなければ、モデルはこれらの情報を効率的かつ確実に活用できません。モデルのアテンション機構は本質的に類似度に基づくソフト検索システムであり、能動的に要約・帰納し知識の階層を構築する思考エンジンではありません。したがってインデックス段階で計算資源を投じ、生の知識に対して能動的な抽出、抽象、構造化を行わなければなりません。「100 個の個別事例」を統計的な要約に圧縮し、「数百件のチケットに散らばった個別事例」を境界まで書き切った明確なルールに抽出するのです。
 
 ### 構造化インデックス：情報検索から知識モデリングへ
 
@@ -515,7 +575,7 @@ GraphRAG はまず LLM を使ってテキストから鍵となるエンティテ
 
 RAPTOR と GraphRAG は学術界の知識組織への探求を代表しますが、バイトダンス火山エンジンがオープンソース化した [OpenViking](https://github.com/volcengine/OpenViking) は第 3 の哲学を提示します。**ファイルシステムのパラダイム**です。それはコンテキストを平坦なベクトルの断片やグラフのノードとしてではなく、すべてのコンテキスト——記憶、リソース、スキル——を仮想ファイルシステム中のディレクトリとファイルに写像し、各エントリが一意の URI を持ちます。
 
-```
+```text
 viking://
 ├── resources/          # 外部知识：文档、代码库、网页
 ├── user/memories/      # 用户记忆：偏好、习惯

@@ -35,6 +35,22 @@ OpenAI は GPT-Live で、音声対話をカスケード、ターンベース、
 
 [^ch9-12]: OpenAI. *Introducing GPT-Live.* 2026-07-08. https://openai.com/index/introducing-gpt-live/。この三分類は ChatGPT Voice の三世代をまとめた同記事に由来し、本文の Omni は「turn-based voice models」に対応する。
 
+**ストリーミングキャンセル:**
+
+```python
+while audio_is_arriving:
+    partial = asr.push(audio_chunk)
+    if endpoint_is_probable(partial):
+        candidate = llm.start(partial)
+        if later_audio_changes_meaning(partial):
+            cancel(candidate)                 # speculative cancellation
+        else:
+            tts.enqueue_stable_segments(candidate)
+
+on_final_transcript(text):
+    commit_or_restart(text)
+```
+
 ### パラダイム一・カスケードパイプライン（Cascading）
 
 商用音声アシスタントの多くは直列パイプラインを使う（図9-1）。VAD が終了を判断し、ASR が音声を文字にし、LLM が回答を生成し、TTS が読み上げる。モジュール性は最適化を容易にするが、各境界が待ち時間を加える。
@@ -157,8 +173,23 @@ Computer Use（GUI 自動化 Agent とも呼ぶ）は、AI に人間のように
 3. 実行層が現実の環境でその動作を実行する（マウスを動かす、クリックする、文字を入力する、など）
 4. インターフェースの応答を待ってから再びスクリーンショットし、次のループに入る
 
+**Computer Use 安全ループ:**
 
-![図9-6 Computer Use Agent の知覚-思考-行動ループ](images/fig9-7.svg)
+```python
+observation = capture_screenshot_and_accessibility_tree()
+proposal = model.decide(task, observation)
+action = validate_schema_and_coordinates(proposal)
+
+if action.is_irreversible and not user_or_policy_approval(action):
+    stop("approval required")
+else:
+    execute_in_sandbox_or_scoped_session(action)
+    new_observation = capture_after_settle()
+    if not verify_goal_progress(new_observation, action):
+        rollback_if_possible_or_replan()
+```
+
+![図9-7 Computer Use Agent の知覚-思考-行動ループ](images/fig9-7.svg)
 
 
 このループには 3 つの鍵となる設計次元があります。**行動空間**（Agent がどんな操作を実行できるか）、**視覚グラウンディング**（スクリーンショットの中でいかに目標要素を見つけるか）、そして **モデルアーキテクチャ**（スクリーンショットからいかに正しい動作を生成するか）です。
@@ -168,7 +199,7 @@ Computer Use（GUI 自動化 Agent とも呼ぶ）は、AI に人間のように
 Anthropic は完全な対話能力を構成する 3 種類のツールを定義しています（図9-7）。
 
 
-![図9-7 Computer Use の行動空間](images/fig9-8.svg)
+![図9-8 Computer Use の行動空間](images/fig9-8.svg)
 
 
 **GUI 操作ツール**（computer tool）：マウス操作には移動（mouse_move）、左／右／中ボタンのクリック、ダブル／トリプルクリック、ドラッグ（left_click_drag）、そしてより細かい押下／解放（left_mouse_down/up）が含まれます。スクロール（scroll）は 4 方向をサポートし、修飾キーと組み合わせられます。キーボード操作には一字ずつの入力（type、各文字の間隔 12ms で本物のタイピングを模す）、組み合わせキー（key、Ctrl+C など）、長押し（hold_key）が含まれます。知覚動作：スクリーンショット（screenshot）、カーソル位置の取得（cursor_position）、待機（wait）。
@@ -203,7 +234,7 @@ Anthropic は完全な対話能力を構成する 3 種類のツールを定義�
 3. 各対話可能要素に一意の ID を振り、スクリーンショット上に境界ボックスを描く
 4. 同時に、各 ID に対応する要素を記述したテキストリストを生成する
 
-```
+```text
 Screenshot: [画像中の主要な要素に [1]、[2]、[3]、[4] などの ID が付されている]
 
 Elements:
@@ -216,7 +247,7 @@ Elements:
 モデルは ID 番号を一つ出力するだけでよく、システムがその要素の中心座標を使って自動でクリックを実行します。この種の方式はトークンを節約しません（すべてのアノテーション情報をモデルに送る必要があるため）が、グラウンディングは正確で安定しており、しかもセグメンテーションモデルが持ち込みうる見落としと誤検出も避けられます。
 
 
-![図9-8 Set-of-Mark と構造化要素インデックス（browser-use の実装）](images/fig9-9.svg)
+![図9-9 Set-of-Mark と構造化要素インデックス（browser-use の実装）](images/fig9-9.svg)
 
 **純粋な座標予測。**
 
@@ -225,7 +256,7 @@ Elements:
 座標予測の方式では、モデルの座標理解は訓練時に使った解像度に強く依存します（図9-9）。Claude は訓練に XGA（1024x768）、WXGA（1280x800）、FWXGA（1366x768）を使っており、入力するスクリーンショットの解像度が合わないと、モデルが予測する座標は系統的にずれます――小さな地図で距離を測って、それをそのまま大きな地図に使うようなものです。したがって、ツール層で双方向の座標スケーリング機構を実装する必要があり、しかも **アスペクト比で目標解像度を選ぶ** 必要があります。非等比の引き伸ばしで画面が歪み、それにつれて座標判断までずれてしまうのを避けるためです。たとえば、実際の画面解像度が 2560×1440（16:9）なら、Claude がサポートする 3 段の中からアスペクト比が同じく 16:9 に近い目標を選ぶべきです――FWXGA（1366×768）が最も合致します。スクリーンショット時に画面を等比で 1366×768 に縮小してモデルに入れ、モデルがクリック座標 (683, 384) を出力したら、実際の座標 (683×2560/1366, 384×1440/768) ≈ (1280, 720) へと逆マッピングします。逆に、無理やり 16:9 を 4:3 の 1024×768 に引き伸ばすと、画面は横方向に押し潰され、モデルが予測する座標は系統的にずれます。
 
 
-![図9-9 解像度の整合と双方向の座標スケーリング](images/fig9-10.svg)
+![図9-10 解像度の整合と双方向の座標スケーリング](images/fig9-10.svg)
 
 
 3 つの路線の選択のロジックはこうまとめられます。**構造化情報が得られるときは DOM/Accessibility Tree のインデックスを優先する**、グラウンディングが最も精確で安定します。**得られないとき**（Photoshop のようなネイティブのデスクトップソフトウェア、Canvas/WebGL でレンダリングされたインターフェース、ゲーム）は、**視覚アノテーション（オリジナルの SoM 路線）を使ってもよいし、座標予測を使ってもよい**。視覚アノテーションはグラウンディングを選択問題に変え、専門的な訓練を受けていない汎用モデルにより親切です。座標予測はアノテーションのステップを省き、GUI グラウンディングの訓練を受けたモデルにより直接的です。両者とも、小さな要素や密集したインターフェースでの精度には依然として差があります。
@@ -329,7 +360,7 @@ Computer Use はモバイル端末へも広がっています。モバイル端�
 二層アーキテクチャの実行層では、RT-2、OpenVLA、π₀ という 3 つの代表的モデルがいずれも VLA 制御――すなわちカメラの画面と言語指示に応じてリアルタイムにロボットの動作を出力すること（図9-10）――に専心しています。それらは動作表現の点で 2 つの路線に分かれます。離散的な動作トークンと、連続的な軌道生成です。
 
 
-![図9-10 VLA アーキテクチャ（Vision-Language-Action）](images/fig9-11.svg)
+![図9-11 VLA アーキテクチャ（Vision-Language-Action）](images/fig9-11.svg)
 
 
 **RT-2 と OpenVLA：離散的な動作トークンの路線。**
@@ -349,7 +380,7 @@ LLM の推論には遅延があるため、VLA の制御周波数は従来のロ
 第 6 章のシミュレーション環境の節で、sim-to-real gap（現実との差）の由来、およびドメインランダム化（domain randomization）がそれに対処する原理はすでに明らかにしたので、ここでは繰り返しません――一言でまとめれば、シミュレーションは真の物理・視覚・ハードウェア特性を完全には再現できないので、訓練時にこれらのパラメータを大きな範囲でランダムに掻き乱し、方策にあらゆる変化に対して安定な汎用表現を学び出させるよう迫るのです（図9-11）。以下ではこの原理が実際のロボットアーム上でどう実装されるかだけを見ます。
 
 
-![図9-11 Sim2Real の隔たりと Domain Randomization](images/fig9-12.svg)
+![図9-12 Sim2Real の隔たりと Domain Randomization](images/fig9-12.svg)
 
 
 この路線にはすでに少なからぬ成功例があります。OpenAI のロボットハンドによる器用な操作（Dactyl プロジェクトは手内での立方体の再配向を実現し、その後続の仕事では自動ドメインランダム化 ADR を用いて片手でのルービックキューブ解法を実現しました）や、ETH Zurich の ANYmal（四足ロボットが雪原、砂利などの複雑な野外地形をロバストに歩行する）が、いずれもこれに当たります。
@@ -388,9 +419,9 @@ LLM の推論には遅延があるため、VLA の制御周波数は従来のロ
 
 計画と実行は重ね合わせられます。安全なプレフィックスが完成したら、プランナーは後続部分の計画を続けながら、完全なコマンドをエグゼキュータへストリーム送信します。コマンドイベントは完全で監査可能でなければなりません。
 
-~~~json
+```text
 {"type":"command.commit","seq":12,"command_id":"desk-02","command":"put paper in bin","preconditions":["paper.visible","bin.reachable"],"success":"paper_count=0","cancel_at":"before_grasp"}
-~~~
+```
 
 エグゼキュータは `started`、`succeeded`、`cancelled`、`failed` を返します。プランナーはその観測で依存関係を更新し、キューが古くなったり満杯になったりしたときはバックプレッシャーを適用します。ストリーミングは最初の安全な動作までの時間を短縮しますが、不完全な JSON や検証されていないモデルの思考を実行してよいという意味ではありません。
 
@@ -398,13 +429,26 @@ LLM の推論には遅延があるため、VLA の制御周波数は従来のロ
 
 OpenVLA は文字どおり projector だけを更新して訓練されたわけではありません。原論文では、全パラメータの fine-tuning、視覚エンコーダを凍結した設定、最終層のみの更新、LoRA も報告されています。それでも、より深い批判は残ります。巨大なテキスト・画像の事前訓練コーパスが、はるかに小さいロボットデータセットと狭い適応経路で接続され、低コストの適応では新しい振る舞いが projector、LoRA モジュール、または action head に集中しがちです。Behavior cloning が学ぶのは「観測 + 指示 → action chunk」であって、反実仮想的な物理結果ではありません。embodiment 固有のアクション空間と古い action chunk も転移を制限します。言語 backbone が「カップ」という語を知っていても、摩擦、液体、接触、電源ケーブルの振る舞いまで知っていることにはなりません。
 
+**アクションチャンクのプリエンプション:**
+
+```python
+chunk = vla(current_observation, skill)
+for action in chunk:
+    low_level.execute(action)
+    if safety_event() or observation_changed_significantly():
+        low_level.stop()
+        discard_remaining(chunk)
+        reobserve_and_replan()
+        break
+```
+
 ### 世界モデル
 
 世界モデルは、行動可能な遷移を学習します。
 
-~~~text
+```text
 状態 + 候補アクション -> 予測された未来状態 -> アクションを選択して検証
-~~~
+```
 
 これは V-JEPA だけを指す言葉ではありません。潜在予測モデル（V-JEPA 2）、インタラクティブ生成モデル（Genie 3 と Cosmos）、World-Action Model（GeniWorld と Robust-WAM）、ラベルなし動画からの latent action 学習（LAWM-3D）、model-based RL（Dreamer と MuZero）を含む、より広い系統です。大規模な観測から学び、実行前に反実仮想の行動結果を試し、共有されたダイナミクスと embodiment 固有の制御を分離し、予測と現実が食い違えば再計画することに価値があります。
 

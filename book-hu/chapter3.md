@@ -40,6 +40,21 @@ Kinyert emlékek:
 - A felhasználónak utazási tervei vannak Tokióba (közelmúltbeli tevékenység)
 ```
 
+**A memória életciklusa:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
+```
+
 A kinyerési folyamatnak több kulcsjellemzője van.
 
 **Szelektivitás** – az Ágens nem jegyez meg átmeneti információkat, például hogy „a keresés 3 lehetőséget adott vissza”, csak a jövőben hasznos tényeket.
@@ -127,51 +142,74 @@ A memória frissítését két fázisra bontja[^uac]: a "memória fázisra" (min
 
 Az alábbiakban egy egyszerűsített példa látható. A strukturáló fázis a felhasználó útlevelét és utazásait tipizált állapotként tárolja:
 
-```python
-from datetime import date
+**Csak-hozzáfűző napló és ellenőrzőpont:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-    # ... további utazások
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**Típusos felhasználói állapot:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 A tipizált állapottal három olyan feladat, amely korábban az LLM "szöveg olvasása és fejben számolása" volt, most determinisztikus kóddá válik:
 
 Először, **statisztikai aggregáció**. „Hányszor utaztam külföldre 2025-ben?” – szöveges memóriával minden utazást vissza kell keresni és megszámolni, ami sok rekordnál könnyen hibázik; a User as Code-ban ez egyetlen kifejezés, közel 100%-os pontossággal[^uac]:
 
+**Determinisztikus összesítés:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 Másodszor, "konfliktusészlelés". Az "aktuális gyógyszerek" és az "allergia előzmények" egymás mellé helyezésével egyetlen függvény gyógyszerosztály szerint összevetheti őket, feltárva a különböző beszélgetésekben szétszórt ellentmondásokat, amelyeket szöveges formában szinte lehetetlen automatikusan összekapcsolni:
 
+**Ütközésészlelés:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"Gyógyszer-ütközés: {med.name} a {med.drug_class} osztályba tartozik, "
-                       f"de a páciens súlyosan allergiás {allergy.allergen}-re")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 Harmadszor, "kényszerek érvényesítése". Az Ágens kódolhat ilyen ellenőrző függvényeket, és automatikusan aktiválhatja őket minden állapotfrissítéskor – anélkül, hogy a felhasználónak szólnia kellene, vagy az Ágensnek bármit vissza kellene keresnie. Például egy útlevél érvényességi kényszer: figyelmeztetés, ha az útlevél kevesebb mint 180 nappal a nemzetközi utazás indulási dátuma után jár le.
 
+**Korlátok érvényesítése:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"Az útlevél lejár: {passport.expiry_date}, csak {days} nap van "
-                       f"a {trip.destination} indulás és az útlevél lejárata között. "
-                       f"Kérjük, újítsa meg mihamarabb.")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: A felhasználói memória végrehajtható kódprojektként való felépítésének teljes tervezése és értékelése megtalálható a következőben: Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026.
@@ -294,6 +332,22 @@ A minta mindkét példában azonos: **Releváns töredékek visszakeresése → 
 
 A visszakereső minősége közvetlenül meghatározza a RAG hatékonyságát – ha nem tud releváns töredékeket visszakeresni, a legerősebb LLM-nek sincs mivel dolgoznia. Ez a szakasz a tudásbázisba való dokumentumbevitel első lépésével, a darabolással (chunking) kezdődik, majd rátér a két fő visszakeresési megközelítésre, a sűrű beágyazásokra (szemantikus megértés) és a ritka beágyazásokra (kulcsszó-egyeztetés), valamint azok kombinálására.
 
+**Hibrid RAG-folyamat:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
+
 ![3-5. ábra: A RAG-lekérdezés folyamata: visszakeresés, kiegészítés és generálás](images/fig3-5.svg)
 
 ### Dokumentumdarabolás
@@ -369,9 +423,15 @@ Itt `TF(t,d)` azt jelöli, hogy a $t$ kifejezés hányszor fordul elő a $d$ dok
 
 A BM25 (Okapi BM25) e két korlát klasszikus korrekciójaként fogható fel: megtartja a ritka kifejezések IDF-súlyozását, miközben szógyakorisági telítést és dokumentumhossz-normalizálást vezet be.
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-Itt $q_i$ egy lekérdezési kifejezés, $|D|$ a dokumentum hossza, $\text{avgdl}$ pedig a korpusz átlagos dokumentumhossza. Amint a 3-8. ábra mutatja, $k_1$ szabályozza, milyen gyorsan telítődik a szógyakoriság, így minden további ismétlés egyre kisebb nyereséget ad; $b$ a hossznormalizálás erősségét szabályozza, hogy a különböző hosszúságú dokumentumok igazságosabban legyenek összehasonlíthatók. Következésképpen tíz előfordulás rendszerint kevesebb mint kétszer annyit ér, mint öt, és ugyanaz a szógyakoriság kisebb súlyt kap egy hosszabb dokumentumban. A konkrét paraméterértékeket és a számítást a 3-5. kísérlet tárgyalja.
+Itt $q_i$ egy lekérdezési kifejezés, $|D|$ a dokumentum hossza, $\text{avgdl}$ pedig a korpusz átlagos dokumentumhossza. Az $\text{IDF}_{\text{BM25}}$ azért kapott alsó indexet, mert nem ugyanaz a képlet, mint a fenti TF-IDF $\text{IDF}$-je: a BM25 egy robusztusabb változatra vált.
+
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
+
+Az intuíció nem változik – minél ritkább a kifejezés, annál nagyobb a súlya –, csak a mérés módja. A számlálóba a dokumentumok teljes száma, $N$ helyett a kifejezést *nem* tartalmazó dokumentumok száma, $N - \text{DF}(t)$ kerül, így a hányados közvetlenül azt mondja meg, hányszor több dokumentumból hiányzik a kifejezés, mint amennyi tartalmazza; a számlálóhoz és a nevezőhöz adott 0,5 simítja az eredményt, és a képlet mindkét szélső esetben, $\text{DF}(t) = 0$ és $\text{DF}(t) = N$ mellett is értelmes marad. Ennek ára, hogy a dokumentumok több mint felében előforduló kifejezés negatív súlyt kap ($\text{DF}(t) > N/2$), ezért a megvalósítások általában alsó korlátot alkalmaznak rá. Ez a változat a valószínűségi visszakeresési modellből származik, és a szakirodalom Robertson–Spärck Jones-súlyként ismeri.
+
+Amint a 3-8. ábra mutatja, $k_1$ szabályozza, milyen gyorsan telítődik a szógyakoriság, így minden további ismétlés egyre kisebb nyereséget ad; $b$ a hossznormalizálás erősségét szabályozza, hogy a különböző hosszúságú dokumentumok igazságosabban legyenek összehasonlíthatók. Következésképpen tíz előfordulás rendszerint kevesebb mint kétszer annyit ér, mint öt, és ugyanaz a szógyakoriság kisebb súlyt kap egy hosszabb dokumentumban. A konkrét paraméterértékeket és a számítást a 3-5. kísérlet tárgyalja.
 
 ![3-8. ábra: A BM25 pontozási mechanizmusa](images/fig3-8.svg)
 
@@ -379,7 +439,7 @@ Itt $q_i$ egy lekérdezési kifejezés, $|D|$ a dokumentum hossza, $\text{avgdl}
 >
 > Hogy a ritka visszakeresés belső működését teljesen feltárjuk, a `sparse-embedding` projekt oktatási segédeszközként a semmiből implementál egy BM25-alapú ritka vektoros keresőmotort. Értéke nem a teljesítmény kifacsarásában rejlik, hanem a teljes átláthatóságban. Gazdag naplózási és vizualizációs interfészeken keresztül világosan megfigyelhetjük a teljes dokumentum-indexelési folyamatot: szöveg-előfeldolgozás (tokenizálás és a visszakeresési értékkel alig rendelkező kínai stop szavak, mint "的" és "了" eltávolítása – olyan funkciószavak, mint a "the" vagy "of" angolban), inverziós index építése, valamint a TF és IDF értékek kiszámítása. Az inverziós index egy fordított leképezési tábla a szavaktól a dokumentumok felé – a forward index "adott dokumentumhoz listázza a benne lévő szavakat", míg az inverziós index ennek az ellenkezőjét csinálja: "adott szóhoz azonnal megkeresi az összes azt tartalmazó dokumentumot". Olyan, mint egy könyv végén lévő tárgymutató: keresed a "TCP"-t, és megmondja, hogy a 45., 112. és 203. oldal említi.
 >
-> Lekérdezés során a napló részletezi a BM25 számítás minden lépését. Ismét a "model distillation" lekérdezést használva példaként – a következő napló a projekthez mellékelt kis mintakorpuszból (N=10 dokumentum) származik, így a találatok száma sokkal kisebb, mint a korábban említett 100 cikkes forgatókönyv. A kézi újraszámolás megkönnyítésére a példa rögzíti a BM25 paramétereket: k1=1.5, b=0.75, átlagos dokumentumhossz avgdl=250 szó; az IDF a standard formát használja: IDF=ln((N−df+0.5)/(df+0.5)), ahol df a szót tartalmazó dokumentumok száma:
+> Lekérdezés során a napló részletezi a BM25 számítás minden lépését. Ismét a "model distillation" lekérdezést használva példaként – a következő napló a projekthez mellékelt kis mintakorpuszból (N=10 dokumentum) származik, így a találatok száma sokkal kisebb, mint a korábban említett 100 cikkes forgatókönyv. A kézi újraszámolás megkönnyítésére a példa rögzíti a BM25 paramétereket: k1=1.5, b=0.75, átlagos dokumentumhossz avgdl=250 szó; az IDF a fenti BM25-formát használja: IDF=ln((N−df+0.5)/(df+0.5)), ahol df a szót tartalmazó dokumentumok száma:
 >
 > ```text
 > Lekérdezés tokenek: ["model", "distillation"]
@@ -456,9 +516,9 @@ Egy mélyebb probléma, hogy még ha építünk is egy RAG rendszert, pusztán a
 
 **1. eset: A fekete macska és fehér macska számlálási probléma.** A 2. fejezetben a fekete macska és fehér macska számlálási példát használtuk annak illusztrálására, hogy "a figyelem egy lágy visszakeresési mechanizmus, és a statisztikai információkat előre ki kell nyerni" – még ha mind a 100 eset be is töltődik a kontextusablakba, a modell küzd a pontos számlálással. Ugyanez a probléma a tudásbázis léptékében is jelentkezik, több új akadállyal tetézve. Tegyük fel, hogy a tudásbázis 100 független esetdokumentumot tartalmaz (90 fekete macska, 10 fehér macska, mindegyik egy független szöveges darab), és a felhasználó megkérdezi: "Mi a fekete macskák és fehér macskák aránya?" Először is, "top-k csonkítás" – kis top-k értékkel, mondjuk 20-szal, a legtöbb eset egyáltalán nem kerül visszakeresésre. Másodszor, "egyenetlen visszakeresési pontszámok" – még nagyobb k értékkel is, az egyes eseteket különbözőképpen írják le, pontszámaik széles skálán mozognak, és némelyek kimaradnak. A legalapvetőbb, hogy van egy "illesztési hiba a dokumentumok közötti összesítésben" – a statisztikai kérdések "az összes dokumentumon átívelő számlálást" igényelnek, míg a visszakeresés természete "a legrelevánsabb néhány megtalálása", ami belső ellentmondást hoz létre. A modell csak hiányos minta alapján vonhat le helytelen következtetéseket (pl. csak 15 fekete macskát és 3 fehér macskát látva). Ha egy előre generált összefoglaló, mint "Összesen 100 macska: 90 fekete macska (90%) és 10 fehér macska (10%)", indexelve van, egyetlen visszakeresés pontos információt ad.
 
-**2. eset: Hibás következtetés az Xfinity kedvezményszabályairól.** Három elszigetelt történeti eset: John veterán sikeresen igényelt kedvezményt, Sarah doktornő kapott kedvezményt, Mike tanárnak azt mondták, nem jogosult. Amikor egy ápolónő érdeklődik, a visszakereső a "nővér" és "doktor" közötti szemantikai hasonlóság miatt Sarah doktori esetét részesíti előnyben, és a modell helytelenül arra következtet, hogy az ápolónők is jogosultak. A visszakereső nem tudja egyidejűleg visszahozni Mike tanári esetét (amely megmutatja, hogy más foglalkozások nem jogosultak). Ráadásul a "nővér" alacsony szemantikai hasonlóságot mutat John veterán esetével, így az eset alacsony rangot kaphat és figyelmen kívül maradhat, ami a szabály hiányos megértéséhez vezet. Ha egy előre kinyert szabály, mint "Az Xfinity kedvezmények csak veteránok és doktorok számára érhetők el; más foglalkozások nem jogosultak", indexelve van, egyetlen visszakeresés megadja a teljes szabályt, függetlenül attól, hogy milyen foglalkozásról kérdeznek.
+**2. eset: Az Xfinity kedvezményre való jogosultság határproblémája.** Ezúttal a tudásbázis egy ügyfélszolgálati jegyarchívum: néhány száz jegy, mindegyik egyetlen valós ügy kimenetelét rögzíti – John veterán kérelmét jóváhagyták, Sarah doktornő megkapta a kedvezményt, Mike tanárnak azt mondták, nem jogosult, és így tovább. Minden jegy egyetlen egyedi eset következtetését írja le; egyik sem mondja ki magát a jogosultság hatókörét. Amikor egy ápolónő azt kérdezi, hogy "jár-e nekem a kedvezmény", több akadály rakódik egymásra. Először a **legközelebbi szomszéd torzítása**: az "ápolónő" szemantikailag a "doktorhoz" áll a legközelebb, így Sarah jegye kerül az élre, és a modell ennek nyomán arra következtet, hogy az ápolónők is jogosultak; ha véletlenül Mike jegye került volna előrébb, ugyanaz a kérdés az ellenkező választ kapta volna. **A választ az dönti el, melyik jegy esik legközelebb a lekérdezéshez, nem pedig maga a szabályzat.** Másodszor a **határszemantika hiánya** – ezt az akadályt a nagyobb k sem oldja meg: a "kizárólag ..., minden más foglalkozás nem jogosult" alakú kijelentés univerzális kvantort és tagadást hordoz, és egyetlen jegyben sem található meg, csak a teljes korpusz lezártjában. Az archívum eleve nem válaszol arra, hogy "ápolónő beleszámít-e", így ha a modellt maroknyi egyedi esetből univerzális szabály levezetésére kényszerítjük, az így kapott következtetés eleve nem volt érvényes. Harmadszor a **teljességjelzés hiánya**: a modell sehogy sem tudja megállapítani, hogy látta-e már a teljes szabályt, ezért nem kérdez vissza, hanem magabiztosan válaszol a kezében lévő néhány jegy alapján. A megoldás megint az indexelési szakaszba tartozik: offline végig kell olvasni a teljes jegyarchívumot, és a hivatalos jogosultsági szabályzatot véve mércének (nem pedig a néhány visszakeresett esetből extrapolálva – éppen ez a később említett tudásszennyezés), egyetlen szabálykártyát desztillálni: "Az Xfinity kedvezmény az aktív állományú katonákat és a veteránokat, valamint az engedéllyel rendelkező egészségügyi dolgozókat – köztük az ápolókat – illeti meg; más foglalkozások, például a tanárok, nem jogosultak; a fel nem sorolt foglalkozások emberi ellenőrzést igényelnek." Ha a határ és a tartalék eset is le van írva, egyetlen visszakeresés megadja a teljes szabályt, bármelyik foglalkozásról kérdezzenek is – a modellnek többé nem kell következtetnie, csak illesztenie.
 
-Mindkét eset ugyanarra a következtetésre mutat: **a naiv RAG – nyers esetek vagy dokumentumok feldolgozatlan bedobása a tudásbázisba – közel sem elég.** Akár egy külső vektoros adatbázisban tárolják és visszakeresés útján illesztik a kontextusba, akár közvetlenül egy hosszú kontextusba helyezik, tudáskinyerés és strukturált előfeldolgozás nélkül a modell nem tudja hatékonyan és megbízhatóan használni ezt az információt. A modell figyelmi mechanizmusa alapvetően egy hasonlóság-alapú lágy visszakeresési rendszer, nem egy olyan gondolkodó motor, amely aktívan összegez, általánosít és tudáshierarchiákat épít. Ezért számítási kapacitást kell befektetni az indexelési szakaszban, hogy aktívan kinyerjük, absztraháljuk és strukturáljuk a nyers tudást – a "100 egyedi esetet" statisztikai összefoglalóvá tömörítve, a "három elszigetelt esetet" explicit szabállyá desztillálva.
+Mindkét eset ugyanarra a következtetésre mutat: **a naiv RAG – nyers esetek vagy dokumentumok feldolgozatlan bedobása a tudásbázisba – közel sem elég.** Akár egy külső vektoros adatbázisban tárolják és visszakeresés útján illesztik a kontextusba, akár közvetlenül egy hosszú kontextusba helyezik, tudáskinyerés és strukturált előfeldolgozás nélkül a modell nem tudja hatékonyan és megbízhatóan használni ezt az információt. A modell figyelmi mechanizmusa alapvetően egy hasonlóság-alapú lágy visszakeresési rendszer, nem egy olyan gondolkodó motor, amely aktívan összegez, általánosít és tudáshierarchiákat épít. Ezért számítási kapacitást kell befektetni az indexelési szakaszban, hogy aktívan kinyerjük, absztraháljuk és strukturáljuk a nyers tudást – a "100 egyedi esetet" statisztikai összefoglalóvá tömörítve, a "több száz jegyben szétszórt egyedi eseteket" a saját határát is kimondó explicit szabállyá desztillálva.
 
 ### Strukturált indexelés: Információ-visszakereséstől a tudásmodellezésig
 

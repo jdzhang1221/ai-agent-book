@@ -35,6 +35,22 @@ The common thread is escaping the assumption that people must speak one at a tim
 
 [^ch9-12]: OpenAI. *Introducing GPT-Live.* 2026-07-08. https://openai.com/index/introducing-gpt-live/ The cascaded / turn-based / full-duplex taxonomy comes from the article's summary of three generations of ChatGPT Voice; its “end-to-end omnimodal (Omni)” term corresponds to the “turn-based voice models” category.
 
+**Streaming cancellation:**
+
+```python
+while audio_is_arriving:
+    partial = asr.push(audio_chunk)
+    if endpoint_is_probable(partial):
+        candidate = llm.start(partial)
+        if later_audio_changes_meaning(partial):
+            cancel(candidate)                 # speculative cancellation
+        else:
+            tts.enqueue_stable_segments(candidate)
+
+on_final_transcript(text):
+    commit_or_restart(text)
+```
+
 ### Paradigm 1 · Cascaded pipeline
 
 Most commercial voice assistants still use a serial pipeline (Figure 9-1): VAD decides when the user has finished, ASR converts audio to text, the LLM understands and generates a reply, and TTS speaks it. Modularity lets each component be optimized independently, but every boundary can add waiting time.
@@ -203,7 +219,23 @@ Computer Use, also known as GUI automation, allows AI to use software like a hum
 3.  The execution layer performs the action in the real environment (moving the mouse, clicking, typing text, etc.).
 4.  It waits for the interface to respond, takes another screenshot, and enters the next loop iteration.
 
-![Figure 9-6: Computer Use Agent's Perceive-Think-Act Loop](images/fig9-7.svg)
+**Computer Use safety loop:**
+
+```python
+observation = capture_screenshot_and_accessibility_tree()
+proposal = model.decide(task, observation)
+action = validate_schema_and_coordinates(proposal)
+
+if action.is_irreversible and not user_or_policy_approval(action):
+    stop("approval required")
+else:
+    execute_in_sandbox_or_scoped_session(action)
+    new_observation = capture_after_settle()
+    if not verify_goal_progress(new_observation, action):
+        rollback_if_possible_or_replan()
+```
+
+![Figure 9-7: Computer Use Agent's Perceive-Think-Act Loop](images/fig9-7.svg)
 
 There are three key design dimensions in this loop: **Action Space** (what operations the Agent can perform), **Visual Grounding** (how to find the target element in the screenshot), and **Model Architecture** (how to generate the correct action from the screenshot).
 
@@ -211,7 +243,7 @@ There are three key design dimensions in this loop: **Action Space** (what opera
 
 Anthropic defines three types of tools that constitute a complete interaction capability (Figure 9-7):
 
-![Figure 9-7: Computer Use Action Space](images/fig9-8.svg)
+![Figure 9-8: Computer Use Action Space](images/fig9-8.svg)
 
 **GUI Operation Tool** (`computer` tool): Mouse operations include moving (`mouse_move`), left/right/middle clicks, double-clicking or triple-clicking, dragging (`left_click_drag`), and more precise press/release actions (`left_mouse_down` and `left_mouse_up`). Scrolling (`scroll`) supports four directions and can be combined with modifier keys. Keyboard operations include typing character by character (`type`, with a 12ms interval between characters to simulate real typing), key combinations (`key`, e.g., `Ctrl+C`), and holding a key (`hold_key`). Perception actions include taking a screenshot, retrieving the cursor position (`cursor_position`), and waiting (`wait`).
 
@@ -245,7 +277,7 @@ When the interface itself provides structured information, annotation can be mor
 3. Annotate each interactive element with a unique ID and draw bounding boxes on the screenshot
 4. Simultaneously generate a text list describing the element corresponding to each ID
 
-```
+```text
 Screenshot: [Key elements in the image are annotated with IDs like [1], [2], [3], [4]]
 
 Elements:
@@ -258,7 +290,7 @@ Elements:
 The model only needs to output an ID, and the system automatically clicks the center of the corresponding element. This approach does not save tokens because all annotation data must still be sent to the model, but it provides accurate, stable localization while avoiding the missed detections and false positives that segmentation models can introduce.
 
 
-![Figure 9-8: Set-of-Mark vs. Structured Element Indexing (browser-use implementation)](images/fig9-9.svg)
+![Figure 9-9: Set-of-Mark vs. Structured Element Indexing (browser-use implementation)](images/fig9-9.svg)
 
 **Pure Coordinate Prediction.**
 
@@ -267,7 +299,7 @@ The third route skips annotation and asks the model to output coordinates direct
 In coordinate prediction schemes, the model's understanding of coordinates is highly dependent on the resolution used during training (Figure 9-9). Claude was trained using XGA (1024×768), WXGA (1280×800), and FWXGA (1366×768). If the input screenshot resolution does not match, the model's predicted coordinates will systematically shift—like measuring a distance on a small map and then applying it directly to a large map. Therefore, a bidirectional coordinate scaling mechanism must be implemented at the tool layer, and the target resolution must be **selected based on the aspect ratio** to avoid non-uniform stretching that distorts the image and consequently biases coordinate judgment. For example, if the actual screen resolution is 2560×1440 (16:9), the most suitable target among Claude's three supported options is FWXGA (1366×768), which has an aspect ratio closest to 16:9. The screenshot is proportionally scaled to 1366×768 and fed to the model; after the model outputs the click coordinates (683, 384), they are inversely mapped to the real coordinates (683×2560/1366, 384×1440/768) ≈ (1280, 720). Conversely, if a 16:9 image is forcibly stretched into the 4:3 1024×768, the image will be horizontally compressed, causing the model's predicted coordinates to systematically shift.
 
 
-![Figure 9-9: Resolution Matching and Bidirectional Coordinate Scaling](images/fig9-10.svg)
+![Figure 9-10: Resolution Matching and Bidirectional Coordinate Scaling](images/fig9-10.svg)
 
 
 The choice among the three routes can be summarized as follows: **when structured information is available, prioritize DOM/accessibility-tree indexing** for the most accurate and stable localization. **When it is unavailable**—in native desktop software such as Photoshop, canvas/WebGL-rendered interfaces, or games—**use either visual annotation (the original SoM route) or coordinate prediction**. Visual annotation turns localization into a multiple-choice problem, making it friendlier to general-purpose models without specialized training. Coordinate prediction eliminates the annotation step and is more direct for models trained specifically on GUI localization. Both approaches still struggle with small elements and dense interfaces.
@@ -377,7 +409,7 @@ General-purpose VLMs already possess decent embodied reasoning capabilities. Goo
 In the execution layer of the two-layer architecture, three representative models—RT-2, OpenVLA, and π₀—all focus on VLA control, i.e., outputting robot actions in real time based on camera images and language instructions (Figure 9-10). They follow two different approaches to action representation: discrete action tokens and continuous trajectory generation.
 
 
-![Figure 9-10: VLA Architecture (Vision-Language-Action)](images/fig9-11.svg)
+![Figure 9-11: VLA Architecture (Vision-Language-Action)](images/fig9-11.svg)
 
 
 **RT-2 and OpenVLA: The Discrete Action Token Route.**
@@ -396,7 +428,7 @@ The true divide in action representation is not between RT-2 and OpenVLA, but be
 
 Chapter 6's simulation section already explained where the sim-to-real gap comes from and how domain randomization counters it, so we won't repeat that here. In a nutshell: simulation can never perfectly reproduce real-world physics, visuals, and hardware, so training randomizes those parameters over a wide range, forcing the policy to learn a representation robust to those variations (Figure 9-11). What follows is how that principle lands on a real robotic arm.
 
-![Figure 9-11: Sim2Real Gap and Domain Randomization](images/fig9-12.svg)
+![Figure 9-12: Sim2Real Gap and Domain Randomization](images/fig9-12.svg)
 
 This approach has produced several notable successes. OpenAI's Dactyl project achieved in-hand cube reorientation, and subsequent work used Automatic Domain Randomization (ADR) to solve a Rubik's Cube with one hand. ETH Zurich's ANYmal quadruped has demonstrated robust locomotion over difficult outdoor terrain such as snow and gravel.
 
@@ -443,9 +475,9 @@ This is a dependency graph, not a paragraph of prose. If the user says “put th
 
 Planning and execution can overlap. Once a safe prefix is complete, the planner streams a complete command to the executor while continuing to plan the suffix. A command event must be complete and auditable:
 
-~~~json
+```text
 {"type":"command.commit","seq":12,"command_id":"desk-02","command":"put paper in bin","preconditions":["paper.visible","bin.reachable"],"success":"paper_count=0","cancel_at":"before_grasp"}
-~~~
+```
 
 The executor reports started, succeeded, cancelled, or failed. The planner uses these observations to update dependencies and applies backpressure when the queue is stale or full. Streaming reduces time to the first safe action; it does not authorize executing partial JSON or unverified model thoughts.
 
@@ -453,13 +485,26 @@ The executor reports started, succeeded, cancelled, or failed. The planner uses 
 
 OpenVLA is not literally trained by updating only its projector: the original work reports full fine-tuning as well as frozen-vision, last-layer, and LoRA variants. The deeper criticism remains valid. A huge text/image pretraining corpus is connected to a much smaller robot dataset through a narrow adaptation path, and downstream low-cost adaptation often concentrates new behavior in a projector, LoRA modules, or an action head. Behavior cloning learns “observation + instruction → action chunk,” not counterfactual physical consequences. Embodiment-specific action spaces and stale action chunks further limit transfer. A language backbone knows the word “cup”; it does not thereby know how friction, liquid, contact, and power cables behave.
 
+**Action-chunk preemption:**
+
+```python
+chunk = vla(current_observation, skill)
+for action in chunk:
+    low_level.execute(action)
+    if safety_event() or observation_changed_significantly():
+        low_level.stop()
+        discard_remaining(chunk)
+        reobserve_and_replan()
+        break
+```
+
 ### World models
 
 A world model learns an actionable transition:
 
-~~~text
+```text
 state + candidate action -> predicted future state -> select and verify an action
-~~~
+```
 
 It is broader than V-JEPA alone. The family includes latent predictive models (V-JEPA 2), interactive generative models (Genie 3 and Cosmos), World-Action Models (GeniWorld and Robust-WAM), latent-action learning from unlabeled video (LAWM-3D), and model-based RL (Dreamer and MuZero). The value is to learn from observation at scale, test counterfactual actions before execution, separate shared dynamics from embodiment-specific control, and replan when prediction and reality diverge.
 

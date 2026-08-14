@@ -6,7 +6,7 @@
 
 這裡有一個容易混淆的差別：**保存經歷不等於從經歷中學習**。將一百條軌跡放入長上下文或向量庫，可以幫助模型在需要時找回某個案例，卻不會自動完成跨案例比較——哪些步驟在成功軌跡中反覆出現、哪些做法只在舊版介面上有效、某次成功究竟來自正確策略還是環境偶然。學習發生在系統主動完成「評價、對照、歸納、驗證」之後，而不是發生在日誌寫入磁碟的那一刻。第三章的使用者記憶主要沉澱「使用者與世界是什麼樣子」，本章的經驗學習則要進一步沉澱「在什麼條件下應該如何行動」；前者讓 Agent 記得更多，後者才讓它從聰明變得熟練。
 
-那麼，為什麼不讓模型在每次任務後直接訓練自己？因為正式環境很少提供乾淨的學習訊號。使用者滿意不代表合規，測試通過也可能是因為刪除了失敗案例；一次局部更新還可能造成能力遺忘、策略漂移或安全性退化。若允許執行中的模型依據未經驗證的回饋直接修改自身，錯誤經驗與提示注入就可能被固化，並在後續任務中持續放大。基礎模型的週期性訓練可以提升通用能力，卻無法及時吸收每個 Agent 每天遇到的私有規則、工具變化與局部經驗。
+那麼，為什麼不讓模型在每次任務後直接訓練自己？因為正式環境很少提供乾淨的學習訊號。使用者滿意不代表合規；局部參數更新也可能造成能力遺忘、策略漂移或安全性退化。若允許執行中的模型依據未經驗證的回饋直接修改自身參數，錯誤經驗與提示注入就可能被固化，並在後續任務中持續放大。另一方面，基礎模型的週期性訓練可以提升通用能力，卻無法及時吸收每個 Agent 每天遇到的私有規則、工具變化與局部經驗。
 
 因此，在模型自身尚無法可靠地持續學習時，必須先將「學習」建構為模型外圍的一套自主系統：記錄執行證據、驗證結果與過程、從多條軌跡中提取共通性，再決定應更新知識、指令、程式或模型參數。所有修改先形成候選版本，經過迴歸測試與安全檢查後，才能改變下一輪執行。這不是對模型學習能力的替代，而是在目前技術條件下讓 Agent 具備持續學習能力的工程路徑。
 
@@ -25,6 +25,19 @@
 更多任務並沒有單一正確答案。客服是否有耐心、是否提供合規範圍內的替代方案，研究報告是否掌握關鍵證據，生成文字是否自然精簡，都需要結合脈絡判斷。此時可以使用第六章介紹的 LLM-as-a-Judge，但不能只讓評審給出一個模糊總分。更有效的做法是預先定義評量規準（Rubric），要求驗證器逐項評分、引用軌跡證據，並在證據不足時明確表示不確定。
 
 圖8-2呈現一個三層驗證結構。底層的結果驗證器讀取測試結果、資料庫狀態與工具回傳，回答「事情是否真的辦成」；中間的過程驗證器檢查業務規則、權限與動作序列，回答「是否以允許的方式辦成」；上層的品質驗證器依據 Rubric 評價語言與策略，回答「是否辦得恰當」。越靠下層的指標越應依賴程式碼與環境真值，只有難以形式化的部分才交由語言模型處理。
+
+**三層軌跡驗證:**
+
+```python
+outcome = verify_environment_state(trajectory)
+process = verify_actions_and_permissions(trajectory)
+quality = judge_with_rubric(trajectory, cite_evidence = true)
+
+if not outcome.pass or not process.pass:
+    reject_as_learning_example(outcome, process, quality)
+else:
+    emit_structured_diagnosis(outcome, process, quality)
+```
 
 ![圖8-2 從環境結果到 LLM Rubric 的三層軌跡驗證](images/fig8-2.svg)
 
@@ -76,6 +89,19 @@ LLM 驗證器本身也需要校準。正式系統通常會準備一小批由專�
 | Prompt 與 Skill | 可語言化的判斷原則與操作規範 | 可解釋、作用範圍可控 | 容易膨脹、衝突或被忽略 |
 | 程式與 Harness | 確定性流程、工具與強約束 | 可測試、執行穩定、成本低 | 開發與維護成本較高 |
 | 模型參數 | 高維度感知、生成風格與隱式策略 | 泛化能力強、推理成本低 | 更新與迴歸成本高 |
+
+**經驗到能力的路由:**
+
+```python
+if experience.is_factual and experience.has_sources:
+    target = KNOWLEDGE
+elif experience.can_be_expressed_as_contextual_language_rule:
+    target = PROMPT_OR_SKILL
+elif experience.is_deterministic or experience.is_hard_safety_constraint:
+    target = PROGRAM_OR_HARNESS
+else:
+    target = MODEL_PARAMETERS
+```
 
 ### 將經驗沉澱為知識
 
@@ -270,6 +296,20 @@ Voyager[^voyager-2023] 展示了一個較完整的持續進化循環。它在 Mi
 
 所有修改首先產生候選能力或候選 Agent，而不是直接覆蓋正式版本。知識文件要驗證檢索後是否提升新任務表現，Prompt 與 Skill 要檢查邊界案例和舊任務迴歸，程式要在沙盒與重設環境中執行測試，參數更新則要檢查遺忘、安全性與分布外任務。驗證通過後，仍應透過分階段發布觀察真實流量；關鍵指標惡化時，自動回復至已知安全版本。
 
+**驗證後發布與回滾:**
+
+```python
+candidate = propose_minimal_update(evidence, current_version)
+
+if not verify(candidate, boundary_set): reject(candidate)
+elif not verify(candidate, retention_set): reject(candidate)
+elif not verify(candidate, safety_set): reject(candidate)
+else:
+    canary = deploy_to_small_traffic(candidate)
+    if canary.metrics_regress: rollback(current_version)
+    else: promote(candidate)
+```
+
 驗證還要區分兩種經常混在一起的能力。**Harness 更新能力**（harness-updating）是從軌跡中產生有價值的持久修改；**Harness 受益能力**（harness-benefit）是任務 Agent 在後續執行中找到、啟用並正確使用這些修改。一個 Skill 本身可能完全正確，但較弱的任務模型沒有在適當場景載入它，或載入後無法長程遵循；任一情況都會讓最終成績看起來像是「沒有進化」。因此，不能只以端到端分數反推更新器好壞。Lin 等人的模型替換實驗顯示，這兩種能力與基礎模型能力的關係並不相同[^harness-benefit-2026]；具體強弱關係仍需更多任務驗證，但將兩者拆開評估是普遍適用的方法。
 
 表8-3 持續進化的分層評估指標
@@ -329,6 +369,17 @@ Agent 的自我進化能力可能將一次錯誤變成長期風險。網頁、�
 3. **蒐集與整合**：從近期已評價軌跡中尋找新訊號，合併重複內容，標記衝突與適用條件，優先產生局部修補；
 4. **驗證與審批**：在遷移集、保留集與安全集上評估候選，高風險寫入等待人工核准；
 5. **修剪與索引**：更新檢索索引，將長期不用或被新證據推翻的能力標記為過期、封存或刪除，同時保留來源與回復版本。
+
+**閒時整合:**
+
+```python
+while sleep_gate_is_open():
+    batch = load_new_evaluated_trajectories()
+    proposals = consolidate(batch, current_capabilities)
+    for proposal in proposals:
+        validate_canary_and_promote_or_rollback(proposal)
+    prune_stale_entries_but_keep_provenance()
+```
 
 使用者記憶是最直觀的例子，但要與行動經驗區分。Claude Code 的自動記憶為每個專案維護 `MEMORY.md` 索引與依主題拆分的詳細檔案，工作階段啟動時只載入索引的有界前綴，其餘內容隨需讀取；當索引接近上限時，系統要求 Agent 合併或移出細節。這說明純文字記憶也需要容量限制、分層載入與主動整理，但目前公開機制主要是在工作階段中持續寫入，不能簡單等同於固定的夜間背景任務[^claude-code-memory]。
 

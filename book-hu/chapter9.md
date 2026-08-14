@@ -35,6 +35,22 @@ A közös cél az „egymás után beszélünk” feltételezés és a VAD szól
 
 [^ch9-12]: OpenAI. *Introducing GPT-Live.* 2026-07-08. https://openai.com/index/introducing-gpt-live/. A háromosztatú besorolás a ChatGPT Voice három generációjának összefoglalásából származik; az Omni a „turn-based voice models” kategóriának felel meg.
 
+**Streaming megszakítása:**
+
+```python
+while audio_is_arriving:
+    partial = asr.push(audio_chunk)
+    if endpoint_is_probable(partial):
+        candidate = llm.start(partial)
+        if later_audio_changes_meaning(partial):
+            cancel(candidate)                 # speculative cancellation
+        else:
+            tts.enqueue_stable_segments(candidate)
+
+on_final_transcript(text):
+    commit_or_restart(text)
+```
+
 ### Paradigma 1 · Kaszkádolt csővezeték
 
 A legtöbb kereskedelmi hangasszisztens soros csővezetéket használ (9-1. ábra): a VAD érzékeli a végét, az ASR szöveggé alakítja a hangot, az LLM megérti és megfogalmazza a választ, a TTS pedig kimondja. A modularitás megkönnyíti az egyes részek optimalizálását, de minden határ várakozást ad hozzá.
@@ -141,7 +157,23 @@ A Computer Use, más néven GUI automatizálás, lehetővé teszi a mesterséges
 3.  A végrehajtási réteg végrehajtja a cselekvést a valós környezetben (egér mozgatása, kattintás, szöveg beírása stb.).
 4.  Megvárja a felület válaszát, újabb képernyőképet készít, és belép a ciklus következő iterációjába.
 
-![9-6. ábra: Computer Use ügynök Érzékel-Gondolkodj-Cselekedj ciklusa](images/fig9-7.svg)
+**Computer Use biztonsági ciklus:**
+
+```python
+observation = capture_screenshot_and_accessibility_tree()
+proposal = model.decide(task, observation)
+action = validate_schema_and_coordinates(proposal)
+
+if action.is_irreversible and not user_or_policy_approval(action):
+    stop("approval required")
+else:
+    execute_in_sandbox_or_scoped_session(action)
+    new_observation = capture_after_settle()
+    if not verify_goal_progress(new_observation, action):
+        rollback_if_possible_or_replan()
+```
+
+![9-7. ábra: Computer Use ügynök Érzékel-Gondolkodj-Cselekedj ciklusa](images/fig9-7.svg)
 
 Ebben a ciklusban három kulcsfontosságú tervezési dimenzió van: "Cselekvési Tér" (milyen műveleteket végezhet az ügynök), "Vizuális Helymeghatározás" (hogyan találja meg a cél elemet a képernyőképen), és "Modell Architektúra" (hogyan generálja a helyes cselekvést a képernyőképből).
 
@@ -149,7 +181,7 @@ Ebben a ciklusban három kulcsfontosságú tervezési dimenzió van: "Cselekvés
 
 Az Anthropic három eszköztípust határoz meg, amelyek teljes interakciós képességet alkotnak (9-7. ábra):
 
-![9-7. ábra: Computer Use cselekvési tér](images/fig9-8.svg)
+![9-8. ábra: Computer Use cselekvési tér](images/fig9-8.svg)
 
 "GUI Kezelő Eszköz" (`computer` eszköz): Egérműveletek: mozgatás (`mouse_move`), bal/jobb/középső kattintás, dupla- vagy háromszoros kattintás, húzás (`left_click_drag`), és pontosabb lenyomás/elengedés műveletek (`left_mouse_down` és `left_mouse_up`). Görgetés (`scroll`) négy irányt támogat, és kombinálható módosító billentyűkkel. Billentyűzetműveletek: karakterenkénti gépelés (`type`, 12 ms intervallummal a karakterek között a valódi gépelés szimulálására), billentyűkombinációk (`key`, pl. `Ctrl+C`), és billentyű lenyomva tartása (`hold_key`). Érzékelési műveletek: képernyőkép készítése, kurzorpozíció lekérése (`cursor_position`), várakozás (`wait`).
 
@@ -195,7 +227,7 @@ Elemek:
 
 A modellnek csak egy azonosítót kell kiadnia, és a rendszer automatikusan rákattint a megfelelő elem középpontjára. Ez a megközelítés nem takarít meg tokeneket, mert minden annotációs adatot el kell küldeni a modellnek, de pontos, stabil lokalizációt biztosít, elkerülve a szegmentációs modellek által bevezethető kihagyásokat és téves pozitívumokat.
 
-![9-8. ábra: Set-of-Mark vs. Strukturált Elemindexálás (browser-use implementáció)](images/fig9-9.svg)
+![9-9. ábra: Set-of-Mark vs. Strukturált Elemindexálás (browser-use implementáció)](images/fig9-9.svg)
 
 "Tiszta Koordináta Előrejelzés."
 
@@ -203,7 +235,7 @@ A harmadik út kihagyja az annotációt, és megkéri a modellt, hogy közvetlen
 
 A koordináta-előrejelzési sémákban a modell koordináta-megértése nagymértékben függ a tanítás során használt felbontástól (9-9. ábra). A Claude-ot XGA (1024×768), WXGA (1280×800) és FWXGA (1366×768) felbontásokon tanították. Ha a bemeneti képernyőkép felbontása nem egyezik, a modell által előrejelzett koordináták szisztematikusan eltolódnak — mintha egy távolságot egy kis térképen mérnénk meg, majd közvetlenül egy nagy térképre alkalmaznánk. Ezért egy kétirányú koordináta-skálázó mechanizmust kell implementálni az eszköz rétegben, és a célfelbontást "a képarány alapján kell kiválasztani", hogy elkerüljük az egyenlőtlen nyújtást, amely torzítja a képet, és ezáltal torzítja a koordináta-ítéletet. Például, ha a tényleges képernyőfelbontás 2560×1440 (16:9), a Claude három támogatott opciója közül a legmegfelelőbb cél az FWXGA (1366×768), amelynek képaránya a legközelebb van a 16:9-hez. A képernyőképet arányosan 1366×768-ra skálázzák és táplálják a modellbe; miután a modell kiadja a kattintási koordinátákat (683, 384), azokat visszafejtik a valós koordinátákra (683×2560/1366, 384×1440/768) ≈ (1280, 720). Ezzel szemben, ha egy 16:9-es képet erőszakosan 4:3-as 1024×768-ra nyújtanak, a kép vízszintesen összenyomódik, ami a modell által előrejelzett koordináták szisztematikus eltolódását okozza.
 
-![9-9. ábra: Felbontás-illesztés és kétirányú koordináta-skálázás](images/fig9-10.svg)
+![9-10. ábra: Felbontás-illesztés és kétirányú koordináta-skálázás](images/fig9-10.svg)
 
 A három út közötti választás a következőképpen foglalható össze: **ha strukturált információ áll rendelkezésre, részesítsük előnyben a DOM/akadálymentesítési fa indexálást** a legpontosabb és legstabilabb lokalizáció érdekében. "Ha nem áll rendelkezésre" — natív asztali szoftverekben, például Photoshop, canvas/WebGL renderelt felületek vagy játékok esetén — **használjunk vizuális annotációt (az eredeti SoM utat) vagy koordináta előrejelzést**. A vizuális annotáció többválasztásos problémává alakítja a lokalizációt, ami barátságosabbá teszi az általános célú modellek számára specializált tanítás nélkül. A koordináta előrejelzés kiküszöböli az annotációs lépést, és közvetlenebb a kifejezetten GUI lokalizációra tanított modellek számára. Mindkét megközelítés továbbra is küzd a kis elemekkel és a sűrű felületekkel.
 
@@ -307,7 +339,7 @@ Az általános célú VLM-ek már rendelkeznek elfogadható megtestesült érvel
 
 A kétrétegű architektúra végrehajtási rétegében három reprezentatív modell — RT-2, OpenVLA és π₀ — mind a VLA vezérlésre összpontosít, azaz robotcselekvések valós idejű kiadására kamera képek és nyelvi utasítások alapján (9-10. ábra). Két különböző megközelítést követnek a cselekvés reprezentációjában: diszkrét cselekvési tokenek és folytonos pályagenerálás.
 
-![9-10. ábra: VLA Architektúra (Vision-Language-Action)](images/fig9-11.svg)
+![9-11. ábra: VLA Architektúra (Vision-Language-Action)](images/fig9-11.svg)
 
 **RT-2 és OpenVLA: A Diszkrét Cselekvési Token Út.**
 
@@ -325,7 +357,7 @@ A valódi megosztottság a cselekvés reprezentációjában nem az RT-2 és az O
 
 A 6. fejezet szimulációs szakasza már elmagyarázta, honnan származik a szimuláció-valóság (sim-to-real) rés, és hogyan küzd ellene a domén randomizáció, így nem ismételjük meg itt. Röviden: a szimuláció soha nem képes tökéletesen reprodukálni a valós fizikát, vizuális elemeket és hardvert, ezért a tanítás széles tartományban randomizálja ezeket a paramétereket, kényszerítve a politikát, hogy megtanuljon egy, ezekre a változatokra robusztus reprezentációt (9-11. ábra). A következőkben azt nézzük meg, hogy ez az elv hogyan valósul meg egy valódi robotkaron.
 
-![9-11. ábra: Sim2Real rés és Domén Randomizáció](images/fig9-12.svg)
+![9-12. ábra: Sim2Real rés és Domén Randomizáció](images/fig9-12.svg)
 
 Ez a megközelítés számos figyelemre méltó sikert produkált. Az OpenAI Dactyl projektje elérte a kocka kézben történő átforgatását, és egy későbbi munka az Automatikus Domén Randomizációt (ADR) használva egy Rubik-kockát oldott meg egy kézzel. Az ETH Zürich ANYmal négylábúja robusztus járást mutatott be nehéz külső terepen, például havon és kavicson.
 
@@ -363,9 +395,9 @@ Ez függőségi gráf, nem prózai bekezdés. Ha a felhasználó azt mondja, hog
 
 A tervezés és a végrehajtás átfedhet. Amint elkészül egy biztonságos előtag, a tervező teljes parancsot továbbít a végrehajtónak, miközben a terv hátralévő részét tovább tervezi. A parancseseménynek teljesnek és auditálhatónak kell lennie:
 
-~~~json
+```text
 {"type":"command.commit","seq":12,"command_id":"desk-02","command":"put paper in bin","preconditions":["paper.visible","bin.reachable"],"success":"paper_count=0","cancel_at":"before_grasp"}
-~~~
+```
 
 A végrehajtó `started`, `succeeded`, `cancelled` vagy `failed` állapotot jelent. A tervező ezek alapján frissíti a függőségeket, és backpressure-t alkalmaz, ha a sor megtelt vagy elavult. A folyamatos végrehajtás lerövidíti az első biztonságos műveletig tartó időt; nem engedi meg hiányos JSON vagy ellenőrizetlen modellgondolatok végrehajtását.
 
@@ -373,13 +405,26 @@ A végrehajtó `started`, `succeeded`, `cancelled` vagy `failed` állapotot jele
 
 Az OpenVLA-t nem szó szerint csak a projector frissítésével tanították: az eredeti munka teljes fine-tuningot, befagyasztott vision encodert, csak az utolsó réteg frissítését és LoRA-változatokat is vizsgál. A mélyebb kritika azonban továbbra is érvényes. A hatalmas szöveg-/kép-előtanítási korpuszt egy sokkal kisebb robotikai adathalmazzal szűk adaptációs út köti össze, ezért az olcsó utólagos adaptáció gyakran a projectorban, LoRA-modulokban vagy az action headben koncentrálja az új viselkedést. A behavior cloning a „megfigyelés + utasítás → action chunk” leképezést tanulja, nem a kontrafaktuális fizikai következményeket. A robot-testhez kötött akciótér és az elavult action chunkok szintén korlátozzák az átvitelt. Attól, hogy a nyelvi backbone ismeri a „csésze” szót, még nem tudja, hogyan viselkedik a súrlódás, a folyadék, az érintkezés vagy a tápkábel.
 
+**Műveletblokk-megelőzés:**
+
+```python
+chunk = vla(current_observation, skill)
+for action in chunk:
+    low_level.execute(action)
+    if safety_event() or observation_changed_significantly():
+        low_level.stop()
+        discard_remaining(chunk)
+        reobserve_and_replan()
+        break
+```
+
 ### Világmodellek
 
 Egy világmodell cselekvésre alkalmas átmenetet tanul:
 
-~~~text
+```text
 állapot + jelölt akció -> előre jelzett jövőbeli állapot -> akció kiválasztása és ellenőrzése
-~~~
+```
 
 Ez tágabb fogalom, mint a V-JEPA önmagában. Ide tartoznak a látens prediktív modellek (V-JEPA 2), az interaktív generatív modellek (Genie 3 és Cosmos), a World-Action Modellek (GeniWorld és Robust-WAM), a címkézetlen videóból végzett látensakció-tanulás (LAWM-3D), valamint a modellalapú RL (Dreamer és MuZero). Értékük, hogy nagy léptékben tanulnak megfigyelésekből, végrehajtás előtt kipróbálják a kontrafaktuális akciók következményeit, szétválasztják a közös dinamikát a testfüggő vezérléstől, és újraterveznek, amikor az előrejelzés eltér a valóságtól.
 

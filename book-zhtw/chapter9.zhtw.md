@@ -35,6 +35,22 @@ OpenAI 在 GPT-Live 介紹中把語音互動概括為級聯、輪次式與全雙
 
 [^ch9-12]: OpenAI. *Introducing GPT-Live.* 2026-07-08. https://openai.com/index/introducing-gpt-live/。本節的「級聯／輪次式／全雙工」分類出自該文對 ChatGPT 語音三代演進的總結；文中的「端到端全模態（Omni）」對應「turn-based voice models」類別。
 
+**流式取消:**
+
+```python
+while audio_is_arriving:
+    partial = asr.push(audio_chunk)
+    if endpoint_is_probable(partial):
+        candidate = llm.start(partial)
+        if later_audio_changes_meaning(partial):
+            cancel(candidate)                 # speculative cancellation
+        else:
+            tts.enqueue_stable_segments(candidate)
+
+on_final_transcript(text):
+    commit_or_restart(text)
+```
+
 ### 範式一 · 級聯流水線（Cascading）
 
 大多數商用語音助理仍使用串行流水線（圖 9-1）：VAD 判斷使用者何時說完，ASR 把音訊轉成文字，LLM 理解並生成回覆，TTS 再把文字說出來。模組化讓每個元件可以獨立優化，但每個邊界都可能增加等待時間。
@@ -169,8 +185,23 @@ Computer Use（也稱 GUI 自動化 Agent）讓 AI 像人類一樣透過觀察�
 3. 執行層在真實環境中執行該動作（移動滑鼠、點選、輸入文字等）
 4. 等待介面響應後再次截圖，進入下一輪迴圈
 
+**Computer Use 安全迴圈:**
 
-![圖 9-6 Computer Use Agent 的感知～思考～行動迴圈](images/fig9-7.svg)
+```python
+observation = capture_screenshot_and_accessibility_tree()
+proposal = model.decide(task, observation)
+action = validate_schema_and_coordinates(proposal)
+
+if action.is_irreversible and not user_or_policy_approval(action):
+    stop("approval required")
+else:
+    execute_in_sandbox_or_scoped_session(action)
+    new_observation = capture_after_settle()
+    if not verify_goal_progress(new_observation, action):
+        rollback_if_possible_or_replan()
+```
+
+![圖 9-7 Computer Use Agent 的感知～思考～行動迴圈](images/fig9-7.svg)
 
 
 這個迴圈中有三個關鍵設計維度：**動作空間**（Agent 能執行哪些操作）、**視覺定位**（如何在截圖中找到目標元素）、以及**模型架構**（如何從截圖生成正確動作）。
@@ -180,7 +211,7 @@ Computer Use（也稱 GUI 自動化 Agent）讓 AI 像人類一樣透過觀察�
 Anthropic 定義三類工具構成完整的互動能力（圖 9-7）：
 
 
-![圖 9-7 Computer Use 動作空間](images/fig9-8.svg)
+![圖 9-8 Computer Use 動作空間](images/fig9-8.svg)
 
 
 **GUI 操作工具**（computer tool）：滑鼠操作包括移動（mouse_move）、左/右/中鍵點選、雙擊/三擊、拖拽（left_click_drag），以及更精細的按下/鬆開（left_mouse_down/up）。滾動（scroll）支援四個方向並可配合修飾鍵。鍵盤操作包括逐字輸入（type，每個字元間隔 12ms 模擬真實打字）、組合鍵（key，如 Ctrl+C）、長按（hold_key）。感知動作：截圖（screenshot）、獲取游標位置（cursor_position）、等待（wait）。
@@ -215,7 +246,7 @@ Anthropic 定義三類工具構成完整的互動能力（圖 9-7）：
 3. 為每個可互動元素標註唯一 ID 並在截圖上繪製邊界框
 4. 同時生成文字列表描述每個 ID 對應的元素
 
-```
+```text
 Screenshot: [圖片中關鍵元素標註了 [1]、[2]、[3]、[4] 等 ID]
 
 Elements:
@@ -228,7 +259,7 @@ Elements:
 模型只需要輸出一個 ID 號就行，系統自動用該元素的中心座標執行點選。這類方案不省 token（因為要把所有標註資訊都發給模型），但定位準確穩定，還免去了分割模型可能引入的漏檢和誤檢。
 
 
-![圖 9-8 Set-of-Mark 與結構化元素索引（browser-use 實現）](images/fig9-9.svg)
+![圖 9-9 Set-of-Mark 與結構化元素索引（browser-use 實現）](images/fig9-9.svg)
 
 **純座標預測。**
 
@@ -237,7 +268,7 @@ Elements:
 在座標預測方案中，模型對座標的理解高度依賴訓練時使用的解析度（圖 9-9）。Claude 訓練使用 XGA（1024x768）、WXGA（1280x800）、FWXGA（1366x768），如果輸入的截圖解析度不匹配，模型預測的座標就會系統性地偏移——就像在小地圖上量距離然後直接用到大地圖上一樣。因此，需要在工具層實現雙向座標縮放機制，而且要**按寬高比選目標解析度**，避免非等比拉伸把畫面壓變形、連帶把座標判斷也帶偏。例如，真實螢幕解析度為 2560×1440（16:9），就該在 Claude 支援的三檔裡挑一個寬高比同樣接近 16:9 的目標——FWXGA（1366×768）最匹配。截圖時把螢幕等比縮放到 1366×768 送入模型；模型輸出點選座標 (683, 384) 後，反向對映為真實座標 (683×2560/1366, 384×1440/768) ≈ (1280, 720)。反過來，若硬把 16:9 拉伸進 4:3 的 1024×768，畫面會被橫向壓扁，模型預測的座標就會系統性偏移。
 
 
-![圖 9-9 解析度匹配與雙向座標縮放](images/fig9-10.svg)
+![圖 9-10 解析度匹配與雙向座標縮放](images/fig9-10.svg)
 
 
 三條路線的選擇邏輯可以概括為：**結構化資訊可得時，優先用 DOM/Accessibility Tree 索引**，定位最精確穩定；**不可得時**（原生桌面軟體如 Photoshop、Canvas/WebGL 渲染的介面、遊戲），**既可以用視覺標註（原始 SoM 路線），也可以用座標預測**。視覺標註把定位變成選擇題，對未經專門訓練的通用模型更友好；座標預測省去標註步驟，對做過 GUI 定位訓練的模型更直接。兩者在小元素和密集介面上的精度都仍有差距。
@@ -341,7 +372,7 @@ Computer Use 也在向移動端擴充套件。移動端與桌面在技術上確�
 在雙層架構的執行層，RT-2、OpenVLA、π₀ 三個代表性模型都專注於 VLA 控制——即根據攝影機畫面和語言指令即時輸出機器人的動作（圖 9-10）。它們在動作表示上分屬兩條路線：離散動作 token 與連續軌跡生成。
 
 
-![圖 9-10 VLA 架構（Vision-Language-Action）](images/fig9-11.svg)
+![圖 9-11 VLA 架構（Vision-Language-Action）](images/fig9-11.svg)
 
 
 **RT-2 與 OpenVLA：離散動作 token 路線。**
@@ -361,7 +392,7 @@ Computer Use 也在向移動端擴充套件。移動端與桌面在技術上確�
 第六章的模擬環境一節已經講清 sim-to-real gap（現實差距）的來源，以及領域隨機化（domain randomization）應對它的原理，這裡不再重複——一句話概括：模擬無法完全還原真實的物理、視覺與硬體特性，訓練時便把這些引數大範圍隨機打亂，逼策略學出一套對各種變化都穩的通用表徵（圖 9-11）。下面只看這套原理在真實機械臂上如何落地。
 
 
-![圖 9-11 Sim2Real 鴻溝與 Domain Randomization](images/fig9-12.svg)
+![圖 9-12 Sim2Real 鴻溝與 Domain Randomization](images/fig9-12.svg)
 
 
 這條路線已有不少成功案例：OpenAI 的機械手靈巧操作（Dactyl 專案實現手內方塊重新導向，其後續工作又藉助自動域隨機化 ADR 實現了單手解魔方）和 ETH Zurich 的 ANYmal（四足機器人在雪地、碎石等複雜野外地形上魯棒行走）都屬此列。
@@ -400,15 +431,28 @@ Computer Use 也在向移動端擴充套件。移動端與桌面在技術上確�
 
 規劃與執行可以重疊。安全前綴確認後，規劃器一邊繼續產生後綴，一邊把完整 command 串流給執行器：
 
-~~~json
+```text
 {"type":"command.commit","seq":12,"command_id":"desk-02","command":"put paper in bin","preconditions":["paper.visible","bin.reachable"],"success":"paper_count=0","cancel_at":"before_grasp"}
-~~~
+```
 
 執行器回傳 started、succeeded、cancelled 或 failed；規劃器以這些觀察更新依賴，當佇列過滿或命令已過時時施加 backpressure。串流執行縮短的是第一個安全動作的等待，不代表可以執行不完整 JSON 或未驗證的模型思考。
 
 ### 為什麼目前 VLA 的泛化有限
 
 OpenVLA 並非只更新 projector；原始研究也比較了完整微調、凍結視覺編碼器、只訓練最後一層及 LoRA。真正的結構性問題仍存在：龐大的文字／影像預訓練資料，透過狹窄的適配通道連接到少量機器人資料；低成本適配時，新增行為常被集中到 projector、LoRA 模組或 action head。行為克隆學到的是「觀察 + 指令 → action chunk」，而不是反事實的物理後果。具身專屬動作空間與過時的動作分塊也限制了跨機器人遷移。
+
+**動作區塊搶佔:**
+
+```python
+chunk = vla(current_observation, skill)
+for action in chunk:
+    low_level.execute(action)
+    if safety_event() or observation_changed_significantly():
+        low_level.stop()
+        discard_remaining(chunk)
+        reobserve_and_replan()
+        break
+```
 
 ### 世界模型
 

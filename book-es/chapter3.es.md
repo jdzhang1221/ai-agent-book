@@ -20,7 +20,7 @@ La esencia del sistema de memoria del usuario es un proceso de aprendizaje activ
 
 Comprendamos este proceso con un ejemplo concreto. Supongamos que el usuario y el Agente sostienen la siguiente conversación:
 
-```
+```text
 User: Help me book a flight to Tokyo next Friday. I prefer window seats
       and I'm vegetarian, so I'll need a special meal.
 Agent: I'll search for flights to Tokyo for next Friday...
@@ -32,12 +32,27 @@ User: Yes, and use my United MileagePlus number 12345678.
 
 Una vez finalizada esta conversación, el marco del Agente ejecutará una llamada dedicada a un LLM para analizar el contenido y extraer la información que vale la pena recordar a largo plazo:
 
-```
+```text
 Extracted memories:
 - User prefers window seats (preference)
 - User is vegetarian, needs special meals on flights (dietary restriction)
 - User's United MileagePlus number: 12345678 (loyalty program)
 - User has travel plans to Tokyo (recent activity)
+```
+
+**Ciclo de vida de la memoria:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
 ```
 
 Observemos varias características clave de este proceso de extracción:
@@ -127,50 +142,74 @@ User as Code divide la actualización de la memoria en dos fases[^uac]: la **fas
 
 A continuación se muestra un ejemplo simplificado. La fase de estructuración guarda el pasaporte y los viajes del usuario como estados tipados:
 
-```python
-from datetime import date
+**Registro de solo anexado y checkpoint:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-    # ... resto de los itinerarios
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**Estado de usuario tipado:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 Gracias a los estados tipados, tres operaciones que antes requerían que el LLM leyera el texto y realizara cálculos mentales se convierten en código determinista:
 
 En primer lugar, la **estadística de agregación**. "¿Cuántas veces viajé al extranjero el año pasado?": en la memoria textual habría que recuperar todos los viajes y contarlos uno a uno, lo que genera más errores a medida que crece el número de registros; en User as Code se resuelve con una sola línea de código, alcanzando una precisión cercana al 100%[^uac]:
 
+**Agregación determinista:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 En segundo lugar, la **detección de conflictos**. Al colocar juntos los estados de "medicación actual" e "historial de alergias", una función puede realizar un cruce de categorías farmacológicas y detectar contradicciones dispersas en conversaciones distintas que serían casi imposibles de asociar automáticamente en texto plano:
 
+**Detección de conflictos:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"Conflicto de medicación: {med.name} pertenece a la clase {med.drug_class}, "
-                       f"pero el paciente es severamente alérgico a {allergy.allergen}")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 En tercer lugar, la **ejecución de restricciones**. El Agente puede fijar estas funciones de verificación para que se ejecuten automáticamente cada vez que se actualice el estado, emitiendo alertas proactivas sin necesidad de que el usuario lo solicite ni de realizar búsquedas. Por ejemplo, una restricción sobre la validez del pasaporte: emitir una alarma si faltan menos de 180 días entre la fecha de salida de un viaje internacional y el vencimiento del pasaporte.
 
+**Aplicación de restricciones:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"El pasaporte vence el {passport.expiry_date}, a solo {days} días "
-                       f"del viaje a {trip.destination}. Por favor renuévelo cuanto antes")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026.
@@ -297,6 +336,21 @@ El patrón en ambos ejemplos es idéntico: **Recuperar fragmentos relevantes →
 
 La calidad del recuperador determina directamente la eficacia de RAG: si no logra encontrar los fragmentos relevantes, por muy potente que sea el LLM no podrá generar una buena respuesta. En esta sección examinaremos primero el paso previo a la entrada de documentos en la base de conocimiento (la fragmentación), para luego enfocar las dos rutas técnicas principales de búsqueda: embeddings densos (basados en comprensión semántica) y embeddings dispersos (basados en coincidencia de palabras clave), así como la forma de combinar ambas.
 
+**Pipeline RAG híbrido:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
 
 ![Figura 3-5: Flujo de consulta RAG: Recuperación, Aumento y Generación](images/fig3-5.svg)
 
@@ -383,9 +437,15 @@ Aquí, `TF(t,d)` es el número de apariciones del término $t$ en el documento $
 
 BM25 (Okapi BM25) puede entenderse como la corrección clásica de esas dos limitaciones: conserva la ponderación IDF de los términos raros e incorpora saturación de frecuencia y normalización por longitud.
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-Aquí, $q_i$ es un término de la consulta, $|D|$ es la longitud del documento y $\text{avgdl}$ es la longitud media de los documentos del corpus. Como muestra la Figura 3-8, $k_1$ controla la velocidad de saturación de la frecuencia, de modo que cada repetición adicional aporta menos; $b$ controla la intensidad de la normalización por longitud para comparar de forma más justa documentos de distinto tamaño. Por eso, diez apariciones de un término normalmente no contribuyen exactamente el doble que cinco, y una misma frecuencia recibe menos peso en un documento más largo. Los parámetros y el cálculo concreto se desarrollan en el Experimento 3-5.
+Aquí, $q_i$ es un término de la consulta, $|D|$ es la longitud del documento y $\text{avgdl}$ es la longitud media de los documentos del corpus. El subíndice de $\text{IDF}_{\text{BM25}}$ indica que no se trata de la misma fórmula que el $\text{IDF}$ de TF-IDF anterior: BM25 emplea una variante más robusta.
+
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
+
+La intuición no cambia —cuanto más raro es el término, mayor es su peso—; solo cambia la forma de medirlo. El numerador pasa a ser el número de documentos que *no* contienen el término, $N - \text{DF}(t)$, en lugar del total $N$, de modo que el cociente expresa directamente cuántas veces más documentos carecen del término que los que lo contienen; sumar 0.5 al numerador y al denominador suaviza el resultado y mantiene la fórmula definida en los dos extremos, $\text{DF}(t) = 0$ y $\text{DF}(t) = N$. El precio es que un término presente en más de la mitad de los documentos ($\text{DF}(t) > N/2$) recibe un peso negativo, por lo que las implementaciones suelen aplicarle un valor mínimo. Esta variante procede del modelo probabilístico de recuperación y se conoce en la literatura como peso de Robertson–Spärck Jones.
+
+Como muestra la Figura 3-8, $k_1$ controla la velocidad de saturación de la frecuencia, de modo que cada repetición adicional aporta menos; $b$ controla la intensidad de la normalización por longitud para comparar de forma más justa documentos de distinto tamaño. Por eso, diez apariciones de un término normalmente no contribuyen exactamente el doble que cinco, y una misma frecuencia recibe menos peso en un documento más largo. Los parámetros y el cálculo concreto se desarrollan en el Experimento 3-5.
 
 
 ![Figura 3-8: Mecanismo de puntuación BM25](images/fig3-8.svg)
@@ -394,7 +454,7 @@ Aquí, $q_i$ es un término de la consulta, $|D|$ es la longitud del documento y
 >
 > Para revelar el funcionamiento interno de la búsqueda dispersa, el proyecto `sparse-embedding` implementa desde cero y con fines didácticos un motor de búsqueda de vectores dispersos basado en el algoritmo BM25. El valor del proyecto no reside en la optimización extrema del rendimiento, sino en la transparencia total del proceso. Mediante registros detallados e interfaces visuales, podemos observar claramente todo el proceso de indexación: preprocesamiento del texto (tokenización y eliminación de palabras vacías como artículos o preposiciones que apenas aportan valor de búsqueda), construcción del índice invertido y cálculo de valores TF e IDF. Un índice invertido (Inverted Index) es una tabla de mapeo inverso de palabras a documentos: mientras que un índice normal responde a "dado un documento, listar sus palabras", el índice invertido invierte la lógica: "dada una palabra, encontrar inmediatamente todos los documentos que la contienen". Es análogo a las páginas de índice terminológico al final de un libro: al buscar "TCP", indica que las páginas 45, 112 y 203 mencionan el término.
 >
-> Durante la consulta, los registros detallan cada paso del cálculo de BM25. Siguiendo con la consulta "destilación de modelos", se muestra a continuación el registro de ejecución sobre un pequeño corpus de ejemplo incluido en el proyecto (total N=10 documentos), por lo que el número de coincidencias es inferior al escenario figurado de 100 artículos. Para facilitar la reproducción del cálculo manual por los lectores, el ejemplo fija los parámetros de BM25 en k1=1.5, b=0.75 y una longitud media de documento avgdl=250 palabras; el IDF adopta la forma estándar IDF=ln((N−df+0.5)/(df+0.5)), donde df es el número de documentos que contienen la palabra:
+> Durante la consulta, los registros detallan cada paso del cálculo de BM25. Siguiendo con la consulta "destilación de modelos", se muestra a continuación el registro de ejecución sobre un pequeño corpus de ejemplo incluido en el proyecto (total N=10 documentos), por lo que el número de coincidencias es inferior al escenario figurado de 100 artículos. Para facilitar la reproducción del cálculo manual por los lectores, el ejemplo fija los parámetros de BM25 en k1=1.5, b=0.75 y una longitud media de documento avgdl=250 palabras; el IDF adopta la forma de BM25 vista antes, IDF=ln((N−df+0.5)/(df+0.5)), donde df es el número de documentos que contienen la palabra:
 >
 > ```
 > Tokenización de consulta: ["modelo", "destilación"]
@@ -473,9 +533,9 @@ El problema de fondo radica en que, incluso construyendo un sistema RAG, colocar
 
 **Caso 1: El recuento de gatos negros y blancos**. En el Capítulo 2 usamos el recuento de gatos para ilustrar que "la atención es una búsqueda blanda y la información estadística requiere consolidación previa": incluso introduciendo 100 casos en la ventana de contexto, el modelo tropieza al realizar recuentos exactos. El mismo problema reaparece en la base de conocimiento, agravado por nuevos obstáculos. Supongamos una base con 100 documentos de casos independientes (90 gatos negros, 10 gatos blancos, cada uno como un bloque): si el usuario pregunta "¿cuál es la proporción?", se producen tres fallos: en primer lugar, el **truncamiento por top-k** (restringido a un top-k de 20, la mayoría de los casos ni se recuperan); en segundo lugar, la **dispersión de puntuaciones de búsqueda** (incluso aumentando k, las variaciones en las descripciones provocan puntuaciones desiguales que omiten casos); y en tercer lugar, el **desalineamiento en la agregación trasversal** (las preguntas estadísticas exigen procesar todos los documentos, mientras que la búsqueda busca recuperar solo los más parecidos). El modelo termina concluyendo de forma errónea a partir de una muestra incompleta (viendo solo 15 gatos negros y 3 blancos). En cambio, si se genera de antemano el resumen "Existen 100 gatos en total: 90 negros (90%) y 10 blancos (10%)" y se indexa, una sola búsqueda obtendrá la información precisa.
 
-**Caso 2: Razonamiento erróneo en las reglas de descuento de Xfinity**. Tres casos históricos aislados: el veterano John solicita con éxito un descuento, la doctora Sarah obtiene una rebaja, y al profesor Mike se le informa que no cumple los requisitos. Cuando una enfermera pregunta, el recuperador prioriza el caso B por cercanía semántica entre "enfermera" y "doctora", y el modelo deduce erróneamente que la enfermera aplica al descuento. El recuperador no logra recuperar simultáneamente el caso C (que aclara que otras profesiones no aplican). Peor aún, la similitud entre "enfermera" y el caso A ("veterano") es baja, por lo que este último queda rezagado en el rango y se ignora, manteniendo una comprensión incompleta de la regla. Si se sintetiza previamente la regla "Los descuentos de Xfinity aplican únicamente a veteranos y médicos; otras profesiones no califican" y se indexa, cualquier consulta sobre cualquier profesión obtendrá la regla completa en una sola búsqueda.
+**Caso 2: El problema de los límites en la elegibilidad para el descuento de Xfinity**. Esta vez la base de conocimiento es un archivo de tickets de soporte: varios cientos de tickets, cada uno con el resultado real de un caso —al veterano John le aprobaron la solicitud, la doctora Sarah obtuvo la rebaja, al profesor Mike se le informó que no cumplía los requisitos, y así sucesivamente—. Cada ticket recoge la conclusión de un caso individual; ninguno enuncia el alcance de la elegibilidad. Cuando una enfermera pregunta "¿tengo derecho al descuento?", los obstáculos se acumulan. Primero, el **sesgo del vecino más cercano**: "enfermera" es semánticamente lo más próximo a "doctora", así que el ticket de Sarah encabeza el ranking y el modelo deduce sin más que las enfermeras también aplican; si el ticket de Mike hubiera quedado por delante, la misma pregunta habría recibido la respuesta contraria. **La respuesta la decide qué ticket queda más cerca de la consulta, no la política en sí.** Segundo, la **ausencia de semántica de frontera**, un obstáculo que ampliar k no resuelve: un enunciado del tipo "únicamente ..., el resto de profesiones no califica" lleva un cuantificador universal y una negación, y no reside en ningún ticket aislado, sino solo en la clausura del corpus completo. El archivo nunca llega a responder "¿cuenta una enfermera?", de modo que obligar al modelo a inducir una regla universal a partir de un puñado de casos individuales produce una conclusión que nunca fue válida. Tercero, la **ausencia de señal de completitud**: el modelo no tiene forma de saber si ya ha visto la regla entera, así que no repregunta y responde con aplomo a partir de los pocos tickets que tiene a mano. La solución vuelve a estar en la fase de indexación: recorrer sin conexión todo el archivo de tickets y, tomando como autoridad la política oficial de elegibilidad (en lugar de extrapolar a partir de los pocos casos recuperados, que es justo la contaminación de conocimiento que se advierte más adelante), sintetizar una única ficha de regla: "Los descuentos de Xfinity aplican a militares en activo y veteranos, y al personal sanitario colegiado, incluidas las enfermeras; otras profesiones como la docencia no califican; las profesiones no listadas requieren revisión humana". Con la frontera y el caso por defecto escritos, una sola búsqueda entrega la regla completa sea cual sea la profesión consultada: el modelo ya no tiene que inducir, solo cotejar.
 
-Estos dos ejemplos revelan la cuestión central: **el enfoque RAG simple de introducir casos o documentos originales sin procesar en la base de conocimiento resulta insuficiente**. Ya sea almacenándolos en bases vectoriales externas o colocándolos en contextos largos, sin una preestructuración y sintetizado previo del conocimiento, el modelo no podrá aprovechar esa información de forma confiable. El mecanismo de atención del modelo es un sistema de búsqueda blanda basado en similitud, no un motor de razonamiento capaz de resumir y estructurar jerarquías de conocimiento activamente. Por ello, se deben invertir recursos de cómputo en la fase de indexación para sintetizar y estructurar activamente el conocimiento original: comprimiendo "100 casos individuales" en un resumen estadístico, o abstrayendo "tres casos aislados" en una regla clara.
+Estos dos ejemplos revelan la cuestión central: **el enfoque RAG simple de introducir casos o documentos originales sin procesar en la base de conocimiento resulta insuficiente**. Ya sea almacenándolos en bases vectoriales externas o colocándolos en contextos largos, sin una preestructuración y sintetizado previo del conocimiento, el modelo no podrá aprovechar esa información de forma confiable. El mecanismo de atención del modelo es un sistema de búsqueda blanda basado en similitud, no un motor de razonamiento capaz de resumir y estructurar jerarquías de conocimiento activamente. Por ello, se deben invertir recursos de cómputo en la fase de indexación para sintetizar y estructurar activamente el conocimiento original: comprimiendo "100 casos individuales" en un resumen estadístico, o abstrayendo "los casos individuales dispersos en cientos de tickets" en una regla clara que enuncia sus propios límites.
 
 ### Indexación Estructurada: De la Recuperación de Información al Modelado del Conocimiento
 
@@ -519,7 +579,7 @@ Por ello, la estrategia recomendada en la práctica es la **complementariedad po
 
 Mientras que RAPTOR y GraphRAG representan la exploración académica de la organización del conocimiento, el proyecto de código abierto [OpenViking](https://github.com/volcengine/OpenViking) de Volcano Engine (ByteDance) propone una tercera filosofía: el **paradigma del sistema de archivos**. En lugar de considerar el contexto como fragmentos vectoriales planos o nodos de un grafo, mapea todo el contexto (memorias, recursos, habilidades) a directorios y archivos en un sistema de archivos virtual, asignando a cada elemento una URI única:
 
-```
+```text
 viking://
 ├── resources/          # Conocimiento externo: documentos, repositorios, webs
 ├── user/memories/      # Memoria del usuario: preferencias, hábitos

@@ -20,7 +20,7 @@
 
 用一個具體的例子來理解這個過程。假設使用者和 Agent 有以下對話：
 
-```
+```text
 User: Help me book a flight to Tokyo next Friday. I prefer window seats
       and I'm vegetarian, so I'll need a special meal.
 Agent: I'll search for flights to Tokyo for next Friday...
@@ -32,12 +32,27 @@ User: Yes, and use my United MileagePlus number 12345678.
 
 這段對話結束後，Agent 框架會呼叫一次專門的 LLM 來分析對話內容，提取出值得長期記住的資訊：
 
-```
+```text
 Extracted memories:
 - User prefers window seats (preference)
 - User is vegetarian, needs special meals on flights (dietary restriction)
 - User's United MileagePlus number: 12345678 (loyalty program)
 - User has travel plans to Tokyo (recent activity)
+```
+
+**記憶生命週期:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
 ```
 
 注意這個提取過程的幾個關鍵特徵：
@@ -127,50 +142,74 @@ Extracted memories:
 
 下面是簡化的例子。結構化階段把使用者的護照和行程存成帶型別的狀態：
 
-```python
-from datetime import date
+**只增日誌與檢查點:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-    # ... 其餘行程
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**型別化使用者狀態:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 有了帶型別的狀態，此前只能靠 LLM「讀一遍文字再心算」的三件事，現在都變成了確定性的程式碼：
 
 其一，**聚合統計**。「我去年出了幾次國？」——在文字記憶裡要把所有行程召回再逐條數，記錄一多就容易出錯；而在 User as Code 裡就是一行表示式，正確率接近 100%[^uac]：
 
+**確定性聚合:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 其二，**衝突發現**。把「當前用藥」和「過敏史」兩份狀態放在一起，一個函式就能按藥物類別交叉比對，揪出散落在不同對話裡、文字形式下幾乎不可能自動關聯的矛盾：
 
+**衝突偵測:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"用藥衝突：{med.name} 屬於 {med.drug_class} 類，"
-                       f"而患者對 {allergy.allergen} 嚴重過敏")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 其三，**約束執行**。Agent 可以把這樣的檢查函式固化下來，在狀態每次更新時自動觸發——不需要使用者開口、也不需要檢索，就能主動提醒。比如一條護照有效期約束：出國行程的出發日距護照到期不足 180 天就報警。
 
+**約束執行:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"護照 {passport.expiry_date} 到期，距 {trip.destination} "
-                       f"行程僅剩 {days} 天，請儘快續辦")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: 把使用者記憶建成可執行程式碼工程的完整設計與評測見 Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026.
@@ -295,8 +334,23 @@ answer = llm.generate(system="你是客服助手。", context=results, question=
 
 兩個例子的模式完全一致：**檢索相關片段 → 注入上下文 → LLM 基於上下文生成答案**。RAG 的核心價值在於讓 LLM 能利用它訓練時沒見過的知識（維基百科的最新內容、公司的內部文件），而不需要重新訓練模型。
 
-檢索器的質量直接決定了 RAG 的效果——如果檢索不到相關片段，LLM 再強也無米之炊。本節先看文件進入知識庫的第一道工序——分塊，再重點看檢索器的兩大技術路線：稠密嵌入（基於語義理解）和稀疏嵌入（基於關鍵詞匹配），以及如何把二者結合起來。
+檢索器的質量直接決定了 RAG 的效果——如果檢索不到相關片段，LLM 再強也難為無米之炊。本節先看文件進入知識庫的第一道工序——分塊，再重點看檢索器的兩大技術路線：稠密嵌入（基於語義理解）和稀疏嵌入（基於關鍵詞匹配），以及如何把二者結合起來。
 
+**混合 RAG 流程:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
 
 ![圖 3-5 RAG 查詢流程：檢索、增強與生成](images/fig3-5.svg)
 
@@ -378,9 +432,15 @@ $$\text{TF-IDF}(t, d) = \text{TF}(t, d) \times \text{IDF}(t), \qquad \text{IDF}(
 
 BM25（Okapi BM25）可以看作對這兩個侷限的經典修正：它保留 IDF 對稀有詞的加權，同時引入詞頻飽和與長度歸一化：
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-其中，$q_i$ 是查詢中的詞，$|D|$ 是文件長度，$\text{avgdl}$ 是語料庫的平均文件長度。如圖 3-8 所示，$k_1$ 控制詞頻飽和速度，使重複出現的邊際貢獻逐漸降低；$b$ 控制長度歸一化強度，使不同長度的文件更公平地比較。因此，一個詞出現 10 次通常不會比出現 5 次貢獻整整兩倍，而相同詞頻在較長文件中的權重也會更低。具體引數和計算過程將在實驗 3-5 中展開。
+其中，$q_i$ 是查詢中的詞，$|D|$ 是文件長度，$\text{avgdl}$ 是語料庫的平均文件長度。式中的 $\text{IDF}_{\text{BM25}}$ 加了下標，是因為它和上面 TF-IDF 的 $\text{IDF}$ 並不是同一個公式——BM25 換了一種更穩健的寫法：
+
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
+
+直覺沒有變，仍然是「詞越稀有，權重越高」，變的只是度量方式：分子從「文件總數 $N$」換成「不含該詞的文件數 $N - \text{DF}(t)$」，於是這個比值直接反映「不含該詞的文件是含它的文件的多少倍」；分子分母又各加 0.5 做平滑，使 $\text{DF}(t)$ 取到 0 或 $N$ 這兩個極端時公式仍然有定義。代價是當一個詞出現在超過半數文件中時（$\text{DF}(t) > N/2$）取值會變成負數，因此實現中通常給它設一個下限。這個形式源自機率檢索模型，文獻中稱為 Robertson–Spärck Jones 權重。
+
+如圖 3-8 所示，$k_1$ 控制詞頻飽和速度，使重複出現的邊際貢獻逐漸降低；$b$ 控制長度歸一化強度，使不同長度的文件更公平地比較。因此，一個詞出現 10 次通常不會比出現 5 次貢獻整整兩倍，而相同詞頻在較長文件中的權重也會更低。具體引數和計算過程將在實驗 3-5 中展開。
 
 
 ![圖 3-8 BM25 評分機制](images/fig3-8.svg)
@@ -390,7 +450,7 @@ $$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(
 >
 > 為了揭示稀疏檢索的內部工作機制，`sparse-embedding` 專案以教育性方式從零實現了基於 BM25 演算法的稀疏向量搜尋引擎。專案的核心價值不在於效能的極致最佳化，而在於過程的完全透明化。透過豐富的日誌和視覺化介面，我們可以清晰觀察文件索引的全過程：文字預處理（分詞，並去除「的」「了」這類幾乎不攜帶檢索價值的停用詞）、建構反向索引、計算 TF 和 IDF 值。所謂反向索引（Inverted Index），就是從詞到文件的反向對映表——普通索引是「給定文件，列出它包含的詞」，反向索引則反過來，「給定一個詞，立刻找到所有包含它的文件」。好比一本書後面的術語索引頁：你查「TCP」，它告訴你第 45、112、203 頁提到了這個詞。
 >
-> 查詢時日誌詳細展示 BM25 的每步計算。仍以查詢「模型蒸餾」為例——以下是在專案自帶的一個小型示例語料（共 N=10 篇文件）上的執行日誌，因此命中篇數比前文 100 篇文章的示意場景少得多。為便於讀者手算復現，示例固定 BM25 引數 k1=1.5、b=0.75，平均文件長度 avgdl=250 詞；IDF 採用標準形式 IDF=ln((N−df+0.5)/(df+0.5))，df 為包含該詞的文件數：
+> 查詢時日誌詳細展示 BM25 的每步計算。仍以查詢「模型蒸餾」為例——以下是在專案自帶的一個小型示例語料（共 N=10 篇文件）上的執行日誌，因此命中篇數比前文 100 篇文章的示意場景少得多。為便於讀者手算復現，示例固定 BM25 引數 k1=1.5、b=0.75，平均文件長度 avgdl=250 詞；IDF 採用上文 BM25 的形式 IDF=ln((N−df+0.5)/(df+0.5))，df 為包含該詞的文件數：
 >
 > ```
 > 查詢分詞: ["模型", "蒸餾"]
@@ -469,9 +529,9 @@ $$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(
 
 **案例一：黑貓白貓的計數問題**。第二章我們用黑貓白貓的計數例子說明過「注意力是軟檢索、統計類資訊需要預先提煉」——即使 100 個案例全部裝進上下文視窗，模型也難以完成精確計數。同樣的問題在知識庫尺度上再次出現，而且疊加了幾重新的障礙。設知識庫有 100 個獨立案例文件（90 只黑貓、10 只白貓，每個是獨立文字塊），使用者詢問「比例是多少？」時：首先是 **top-k 截斷**——受限於 top-k（如 20），大部分案例根本不會被檢索到；其次是**檢索分數參差**——即便提高 k 值，由於個體描述各異，檢索分數參差不齊，部分案例仍被遺漏；最根本的是**跨文件聚合**的錯位——統計類問題需要「數遍所有文件」，而檢索的本性是「找最相關的幾個」，兩者天然矛盾。模型只能基於不完整樣本（如只看到 15 只黑貓和 3 只白貓）得出錯誤結論。若預先生成摘要 「共有 100 只貓：90 只黑貓（90%）和 10 只白貓（10%）」 並索引，一次檢索就能獲得準確資訊。
 
-**案例二：Xfinity 優惠規則的錯誤推理**。三個孤立的歷史案例：退伍軍人 John 成功申請優惠，醫生 Sarah 獲得折扣，教師 Mike 被告知不符合條件。護士詢問時，檢索器因 「護士」 與 「醫生」 語義相近優先召回案例 B，模型錯誤推斷護士也可享受。檢索器未能同時召回案例 C（說明其他職業不符合條件）。更糟的是，「護士」 與案例 A 「退伍軍人」 語義相似度低，該案例可能排名靠後被忽略，導致對規則理解仍然片面。若預先提煉規則 「Xfinity 優惠僅適用於退伍軍人和醫生，其他職業不符合條件」 並索引，無論問及何種職業一次檢索即獲完整規則。
+**案例二：Xfinity 優惠資格的邊界問題**。這次的知識庫是客服工單歸檔，幾百條工單各自記錄一次真實的處理結果：退伍軍人 John 通過審核，醫生 Sarah 拿到折扣，教師 Mike 被告知不符合條件……每條工單只寫清一個個案的結論，沒有任何一條寫著資格範圍本身。護士來問「我能不能享受優惠」時，同樣有幾重障礙：首先是**最近鄰偏置**——「護士」與「醫生」語義最近，Sarah 那條排在最前，模型順勢推斷護士也可以；若 Mike 那條碰巧排得更前，同一個問題就會得到相反的答案，**答案取決於哪條工單離查詢最近，而不取決於政策本身**。其次是**邊界語義的缺失**——這一重障礙調大 k 也解決不了：「僅限……，其他一律不適用」這種帶全稱與否定的邊界，不存在於任何單條工單中，只存在於整個語料的閉包裡；工單庫壓根沒有回答「護士算不算」，讓模型從幾條個案硬歸納出全稱規則，結論本就不成立。最後是**完整性訊號的缺失**——模型無從判斷自己是否已經看全，於是不會追問，只照著手裡這幾條自信作答。解法仍在索引期：離線通讀整個工單庫，並以官方資格政策為準繩（而不是從檢索到的幾條個案外推，那正是後文警告的知識汙染），提煉出一條規則卡 「Xfinity 優惠適用於現役與退伍軍人、持證醫護人員（含護士）；教師等其他職業不適用；未列明的職業需轉人工核實」。邊界和兜底都寫清之後，無論問及何種職業，一次檢索即得完整規則——模型不必歸納，只需匹配。
 
-這兩個案例深刻揭示了核心問題：**簡單的 RAG 方式，即把原始案例或文件不加處理地直接放入知識庫，是遠遠不夠的**。無論是存入外部向量資料庫透過檢索注入上下文，還是直接放在長上下文中，如果沒有經過知識提煉和結構化的預處理，模型都無法高效、可靠地利用這些資訊。模型的注意力機制本質上是基於相似度的軟檢索系統，而非能夠主動總結、歸納和建構知識層次的思考引擎。因此必須在索引階段投入計算資源，對原始知識進行主動的提煉、抽象和結構化——將 「100 個個體案例」 壓縮為統計摘要，將 「三個孤立案例」 提煉為明確規則。
+這兩個案例深刻揭示了核心問題：**簡單的 RAG 方式，即把原始案例或文件不加處理地直接放入知識庫，是遠遠不夠的**。無論是存入外部向量資料庫透過檢索注入上下文，還是直接放在長上下文中，如果沒有經過知識提煉和結構化的預處理，模型都無法高效、可靠地利用這些資訊。模型的注意力機制本質上是基於相似度的軟檢索系統，而非能夠主動總結、歸納和建構知識層次的思考引擎。因此必須在索引階段投入計算資源，對原始知識進行主動的提煉、抽象和結構化——將 「100 個個體案例」 壓縮為統計摘要，將 「散落在幾百條工單裡的個案」 提煉為帶邊界的明確規則。
 
 ### 結構化索引：從資訊檢索到知識建模
 
@@ -515,7 +575,7 @@ GraphRAG 先利用 LLM 從文字中提取關鍵實體（人物、地點、概念
 
 RAPTOR 和 GraphRAG 代表了學術界對知識組織的探索，而字節跳動火山引擎開源的 [OpenViking](https://github.com/volcengine/OpenViking) 則提出了第三種哲學：**檔案系統範式**。它不將上下文視為扁平的向量碎片或圖譜節點，而是將所有上下文——記憶、資源、技能——對映為虛擬檔案系統中的目錄和檔案，每個條目擁有唯一 URI：
 
-```
+```text
 viking://
 ├── resources/          # 外部知識：文件、程式碼庫、網頁
 ├── user/memories/      # 使用者記憶：偏好、習慣

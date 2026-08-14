@@ -20,7 +20,7 @@ Intinya, sistem memori pengguna adalah proses belajar aktif berkelanjutan untuk 
 
 Mari kita lihat contoh nyatanya. Bayangkan percakapan pengguna dan Agent berikut:
 
-```
+```text
 User: Tolong pesankan tiket pesawat ke Tokyo untuk Jumat depan. Saya suka kursi dekat jendela dan saya seorang vegetarian, jadi saya butuh makanan khusus.
 Agent: Saya akan mencari penerbangan ke Tokyo untuk Jumat depan...
        [memanggil tool flight_search, mengembalikan 3 opsi]
@@ -30,12 +30,27 @@ User: Ya, dan gunakan nomor United MileagePlus saya 12345678.
 
 Setelah percakapan ini usai, sistem Agent akan memanggil LLM khusus untuk menganalisis dialog dan menyaring informasi yang patut diingat selamanya:
 
-```
+```text
 Memori yang diekstrak:
 - Pengguna suka kursi dekat jendela (preferensi)
 - Pengguna vegetarian, butuh makanan khusus di pesawat (batasan diet)
 - Nomor United MileagePlus pengguna: 12345678 (program loyalitas)
 - Pengguna punya rencana bepergian ke Tokyo (aktivitas terbaru)
+```
+
+**Siklus hidup memori:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
 ```
 
 Perhatikan beberapa sifat utama proses ekstraksi ini:
@@ -125,51 +140,74 @@ Konsep tersebut membagi pembaruan memori ke dalam dua tahapan[^uac]: tahap memor
 
 Berikut contoh ringkasnya. Pada fase strukturisasi, sistem menyimpan dokumen perjalanan dan paspor pengguna sebagai state bertipe yang ketat:
 
-```python
-from datetime import date
+**Log append-only dan checkpoint:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-    # ... remaining trips
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**State pengguna bertipe:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 Bersenjata wujud state bertipe (typed state) ini, tiga tugas yang sebelumnya menuntut LLM untuk membaca teks dan melakukan kalkulasi mental (mental arithmetic), kini berubah menjadi kode yang deterministik (deterministic code):
 
 Pertama, **pengumpulan statistik (statistical aggregation)**. "Berapa banyak perjalanan internasional yang saya lakukan pada tahun 2025?"—dengan memori berbasis teks, Anda harus memanggil ulang setiap perjalanan dan menghitungnya satu per satu, dan kesalahan makin mungkin terjadi seiring bertambahnya jumlah catatan; sedangkan dengan User as Code, hal tersebut hanyalah satu ekspresi yang mencapai akurasi hampir 100%[^uac]:
 
+**Agregasi deterministik:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 Kedua, **deteksi konflik (conflict detection)**. Dengan mensejajarkan "pengobatan saat ini" dan "alergi", sebuah fungsi tunggal mampu menyilangkan data tersebut (cross-reference) berdasarkan kelas obat (drug class), serta menyingkap kontradiksi yang tersebar melintasi beragam percakapan berbeda, yang mana hal ini nyaris mustahil untuk dikaitkan secara otomatis dalam format teks:
 
+**Deteksi konflik:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"Medication conflict: {med.name} belongs to {med.drug_class} class, "
-                       f"but the patient is severely allergic to {allergy.allergen}")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 Ketiga, **penegakan batasan (constraint enforcement)**. Agent dapat menyandikan fungsi pemeriksaan (check functions) semacam itu dan memicunya (trigger) secara otomatis setiap kali statusnya diperbarui (updated)—tanpa mengharuskan pengguna untuk berbicara atau Agent untuk memanggil (retrieve) apa pun. Sebagai contoh, batasan mutlak pada masa kedaluwarsa paspor: bunyikan peringatan (alert) jika paspor tersebut kedaluwarsa dalam kurang dari 180 hari setelah tanggal keberangkatan perjalanan internasional (international trip departure).
 
+**Penegakan constraint:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"Passport expires on {passport.expiry_date}, only {days} days "
-                       f"between the {trip.destination} departure and passport expiry. "
-                       f"Please renew as soon as possible.")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: Desain lengkap dan evaluasi dalam membangun User Memory sebagai proyek kode yang dapat dieksekusi dapat ditemukan di Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026.
@@ -294,6 +332,22 @@ Polanya identik pada kedua contoh: **Retrieve fragmen yang relevan → Suntikkan
 
 Kualitas dari *retriever* secara langsung menentukan keefektifan RAG—jika ia tidak dapat melakukan *retrieve* pada fragmen yang relevan, bahkan LLM terkuat pun tidak memiliki apapun untuk dikerjakan. Bagian ini dimulai dengan langkah pertama untuk memasukkan dokumen ke dalam Knowledge Base—*chunking*—kemudian beralih ke dua pendekatan *retrieval* utama, Dense Embeddings (pemahaman semantik) dan Sparse Embeddings (pencocokan kata kunci), serta bagaimana menggabungkan keduanya.
 
+**Pipeline RAG hibrida:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
+
 ![Gambar 3-5: Alur Kueri RAG: Retrieval, Augmentation, dan Generation](images/fig3-5.svg)
 
 ### Pemenggalan Dokumen
@@ -368,9 +422,15 @@ Di sini, `TF(t,d)` adalah jumlah kemunculan istilah $t$ dalam dokumen $d$, `DF(t
 
 BM25 (Okapi BM25) dapat dipandang sebagai koreksi klasik terhadap kedua keterbatasan ini. BM25 mempertahankan pembobotan IDF bagi istilah langka sekaligus menambahkan saturasi frekuensi istilah dan normalisasi panjang dokumen:
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-Di sini, $q_i$ adalah istilah query, $|D|$ adalah panjang dokumen, dan $\text{avgdl}$ adalah panjang rata-rata dokumen dalam korpus. Seperti ditunjukkan Gambar 3-8, $k_1$ mengendalikan seberapa cepat frekuensi istilah mencapai saturasi sehingga setiap pengulangan tambahan memberi kenaikan yang makin kecil; $b$ mengendalikan kekuatan normalisasi panjang agar dokumen dengan panjang berbeda dapat dibandingkan secara lebih adil. Akibatnya, 10 kemunculan biasanya menyumbang kurang dari dua kali lipat dibandingkan 5 kemunculan, dan frekuensi istilah yang sama mendapat bobot lebih kecil dalam dokumen yang lebih panjang. Nilai parameter spesifik dan perhitungannya dibahas dalam Eksperimen 3-5.
+Di sini, $q_i$ adalah istilah query, $|D|$ adalah panjang dokumen, dan $\text{avgdl}$ adalah panjang rata-rata dokumen dalam korpus. Subskrip pada $\text{IDF}_{\text{BM25}}$ menandakan bahwa rumusnya tidak sama dengan $\text{IDF}$ pada TF-IDF di atas: BM25 beralih ke varian yang lebih tahan banting.
+
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
+
+Intuisinya tidak berubah—makin langka sebuah istilah, makin besar bobotnya—yang berubah hanyalah cara mengukurnya. Pembilangnya menjadi jumlah dokumen yang *tidak* memuat istilah tersebut, $N - \text{DF}(t)$, bukan total $N$, sehingga rasio itu langsung menyatakan berapa kali lipat dokumen yang tidak memuat istilah dibandingkan yang memuatnya; penambahan 0,5 pada pembilang dan penyebut memberi efek penghalusan sehingga rumus tetap terdefinisi pada dua kondisi ekstrem, $\text{DF}(t) = 0$ dan $\text{DF}(t) = N$. Harganya adalah istilah yang muncul di lebih dari separuh dokumen ($\text{DF}(t) > N/2$) memperoleh bobot negatif, sehingga implementasi biasanya membatasinya dengan nilai minimum. Varian ini berasal dari model pengambilan probabilistik dan dikenal dalam literatur sebagai bobot Robertson–Spärck Jones.
+
+Seperti ditunjukkan Gambar 3-8, $k_1$ mengendalikan seberapa cepat frekuensi istilah mencapai saturasi sehingga setiap pengulangan tambahan memberi kenaikan yang makin kecil; $b$ mengendalikan kekuatan normalisasi panjang agar dokumen dengan panjang berbeda dapat dibandingkan secara lebih adil. Akibatnya, 10 kemunculan biasanya menyumbang kurang dari dua kali lipat dibandingkan 5 kemunculan, dan frekuensi istilah yang sama mendapat bobot lebih kecil dalam dokumen yang lebih panjang. Nilai parameter spesifik dan perhitungannya dibahas dalam Eksperimen 3-5.
 
 ![Gambar 3-8: Mekanisme Penilaian BM25](images/fig3-8.svg)
 
@@ -379,7 +439,7 @@ Di sini, $q_i$ adalah istilah query, $|D|$ adalah panjang dokumen, dan $\text{av
 
 > Untuk mengungkap cara kerja internal sparse retrieval, proyek `sparse-embedding` mengimplementasikan mesin pencari sparse vector berbasis BM25 dari awal sebagai sarana pembelajaran. Nilainya tidak terletak pada memaksimalkan performa, melainkan pada transparansi penuh. Melalui log yang kaya dan antarmuka visualisasi, kita dapat mengamati dengan jelas seluruh proses indexing dokumen: preprocessing teks (tokenization dan penghapusan stop words bahasa Mandarin seperti "的" dan "了" (kata tugas yang sama umumnya dengan "the" atau "of" dalam bahasa Inggris) yang hampir tidak memiliki nilai retrieval), membangun inverted index, dan menghitung nilai TF dan IDF. Inverted index adalah tabel pemetaan terbalik dari kata ke dokumen—forward index adalah "diberikan sebuah dokumen, sebutkan kata-kata yang dikandungnya," sedangkan inverted index melakukan kebalikannya: "diberikan sebuah kata, segera temukan semua dokumen yang mengandungnya." Ini seperti indeks istilah di bagian belakang buku: Anda mencari "TCP," dan indeks itu memberi tahu Anda bahwa halaman 45, 112, dan 203 menyebutkannya.
 >
-> Selama sebuah query, log merinci setiap langkah perhitungan BM25. Menggunakan query "model distillation" sebagai contoh lagi—log berikut berasal dari korpus sampel kecil (N=10 dokumen) yang disertakan dengan proyek, sehingga jumlah kecocokan jauh lebih sedikit daripada skenario 100 artikel yang disebutkan sebelumnya. Untuk memfasilitasi perhitungan ulang manual, contoh ini menetapkan parameter BM25 k1=1.5, b=0.75, dan panjang dokumen rata-rata avgdl=250 kata; IDF menggunakan bentuk standar IDF=ln((N−df+0.5)/(df+0.5)), di mana df adalah jumlah dokumen yang mengandung kata tersebut:
+> Selama sebuah query, log merinci setiap langkah perhitungan BM25. Menggunakan query "model distillation" sebagai contoh lagi—log berikut berasal dari korpus sampel kecil (N=10 dokumen) yang disertakan dengan proyek, sehingga jumlah kecocokan jauh lebih sedikit daripada skenario 100 artikel yang disebutkan sebelumnya. Untuk memfasilitasi perhitungan ulang manual, contoh ini menetapkan parameter BM25 k1=1.5, b=0.75, dan panjang dokumen rata-rata avgdl=250 kata; IDF menggunakan bentuk BM25 di atas, IDF=ln((N−df+0.5)/(df+0.5)), di mana df adalah jumlah dokumen yang mengandung kata tersebut:
 >
 > ```
 > Query tokens: ["model", "distillation"]
@@ -452,9 +512,9 @@ Masalah yang lebih dalam adalah bahwa meskipun kita membangun sistem RAG, sekada
 
 **Kasus 1: Masalah Menghitung Kucing Hitam dan Kucing Putih.** Pada Bab 2, kita menggunakan contoh menghitung kucing hitam dan putih untuk mengilustrasikan bahwa "attention adalah mekanisme soft retrieval, dan informasi statistik perlu diekstraksi sebelumnya"—bahkan jika seluruh 100 kasus dimuat ke dalam jendela konteks, model kesulitan untuk melakukan penghitungan yang akurat. Masalah yang sama muncul kembali pada skala Knowledge Base, diperparah oleh beberapa hambatan baru. Misalkan Knowledge Base memiliki 100 dokumen kasus independen (90 kucing hitam, 10 kucing putih, masing-masing merupakan potongan teks independen), dan pengguna bertanya, "Berapa rasio kucing hitam dan kucing putih?" Pertama, **pemotongan top-k**—dengan nilai top-k yang kecil, seperti 20, sebagian besar kasus tidak akan ditarik sama sekali. Kedua, **skor retrieval yang tidak merata**—bahkan dengan k yang lebih besar, kasus individu dideskripsikan secara berbeda, skornya sangat bervariasi, dan beberapa masih terlewatkan. Yang paling mendasar, terdapat **ketidaksesuaian dalam agregasi lintas dokumen**—pertanyaan statistik memerlukan "penghitungan di seluruh dokumen," sementara sifat dasar retrieval adalah "menemukan beberapa yang paling relevan," menciptakan kontradiksi yang melekat. Model hanya dapat menarik kesimpulan yang salah berdasarkan sampel yang tidak lengkap (misalnya, hanya melihat 15 kucing hitam dan 3 kucing putih). Jika ringkasan yang dihasilkan sebelumnya seperti "Total 100 kucing: 90 kucing hitam (90%) dan 10 kucing putih (10%)" diindeks, satu kali retrieval akan menghasilkan informasi yang akurat.
 
-**Kasus 2: Penalaran Keliru tentang Aturan Diskon Xfinity.** Tiga kasus historis yang terisolasi: Veteran John berhasil mengajukan diskon, Dokter Sarah menerima diskon, Guru Mike diberitahu bahwa ia tidak memenuhi syarat. Ketika seorang perawat bertanya, retriever, karena kesamaan semantik antara "perawat" dan "dokter," memprioritaskan kasus dokter Sarah, dan model secara keliru menyimpulkan bahwa perawat juga memenuhi syarat. Retriever gagal untuk secara bersamaan menarik kasus guru Mike (yang menunjukkan profesi lain tidak memenuhi syarat). Lebih buruk lagi, "perawat" memiliki kesamaan semantik yang rendah dengan kasus veteran John, sehingga kasus tersebut mungkin berada di peringkat rendah dan diabaikan, yang mengarah pada pemahaman aturan yang tidak lengkap. Jika aturan yang diekstraksi sebelumnya seperti "Diskon Xfinity hanya tersedia untuk veteran dan dokter; profesi lain tidak memenuhi syarat" diindeks, satu kali retrieval akan memberikan aturan lengkap terlepas dari profesi yang ditanyakan.
+**Kasus 2: Masalah Batas pada Kelayakan Diskon Xfinity.** Kali ini Knowledge Base-nya adalah arsip tiket dukungan pelanggan: beberapa ratus tiket, masing-masing mencatat satu hasil penanganan nyata—Veteran John lolos verifikasi, Dokter Sarah mendapat diskon, Guru Mike diberitahu bahwa ia tidak memenuhi syarat, dan seterusnya. Setiap tiket hanya menuliskan kesimpulan satu kasus individual; tidak satu pun menuliskan cakupan kelayakan itu sendiri. Ketika seorang perawat bertanya "apakah saya memenuhi syarat?", beberapa rintangan menumpuk. Pertama, **bias tetangga terdekat**—"perawat" paling dekat secara semantik dengan "dokter," sehingga tiket Sarah menempati peringkat teratas dan model pun menyimpulkan bahwa perawat juga memenuhi syarat; seandainya tiket Mike yang kebetulan berperingkat lebih tinggi, pertanyaan yang sama akan mendapat jawaban sebaliknya. **Jawabannya ditentukan oleh tiket mana yang kebetulan paling dekat dengan kueri, bukan oleh kebijakannya.** Kedua, **hilangnya semantik batas**—rintangan yang tidak bisa diatasi dengan memperbesar k: pernyataan berbentuk "hanya ..., profesi lain tidak memenuhi syarat" mengandung kuantor universal dan negasi, dan tidak berada di satu tiket mana pun, melainkan hanya pada ketertutupan (closure) seluruh korpus. Arsip tiket sejak awal tidak pernah menjawab "apakah perawat termasuk," sehingga memaksa model menginduksi aturan universal dari segelintir kasus individual menghasilkan kesimpulan yang memang tidak pernah sahih. Ketiga, **hilangnya sinyal kelengkapan**—model tidak punya cara untuk tahu apakah ia sudah melihat seluruh aturan, jadi ia tidak bertanya balik dan langsung menjawab dengan percaya diri dari beberapa tiket yang ada di tangan. Perbaikannya kembali berada di tahap pengindeksan: bacalah seluruh arsip tiket secara offline dan, dengan menjadikan kebijakan kelayakan resmi sebagai acuan (bukan mengekstrapolasi dari beberapa kasus yang berhasil di-retrieve—yang justru merupakan polusi pengetahuan yang diperingatkan nanti), sarikan satu kartu aturan: "Diskon Xfinity berlaku untuk anggota militer aktif dan veteran, serta tenaga medis berlisensi termasuk perawat; profesi lain seperti guru tidak memenuhi syarat; profesi yang tidak tercantum memerlukan peninjauan manusia." Setelah batas dan penanganan cadangannya sama-sama tertulis, satu kali retrieval memberikan aturan lengkap terlepas dari profesi yang ditanyakan—model tidak perlu lagi menginduksi, cukup mencocokkan.
 
-Kedua kasus menunjuk pada kesimpulan yang sama: **naive RAG—memasukkan kasus atau dokumen mentah ke dalam Knowledge Base tanpa diproses—sama sekali tidak cukup.** Baik disimpan dalam database vektor eksternal dan disuntikkan ke dalam konteks melalui retrieval, atau ditempatkan secara langsung dalam konteks yang panjang, tanpa ekstraksi pengetahuan dan prapemrosesan terstruktur, model tidak dapat menggunakan informasi ini secara efisien dan andal. Mekanisme attention model pada dasarnya adalah sistem soft retrieval berbasis kesamaan, bukan mesin berpikir yang secara aktif meringkas, menggeneralisasi, dan membangun hierarki pengetahuan. Jadi komputasi harus diinvestasikan pada tahap pengindeksan untuk secara aktif mengekstrak, mengabstraksi, dan menyusun pengetahuan mentah—mengompresi "100 kasus individu" menjadi ringkasan statistik, menyaring "tiga kasus terisolasi" menjadi aturan eksplisit.
+Kedua kasus menunjuk pada kesimpulan yang sama: **naive RAG—memasukkan kasus atau dokumen mentah ke dalam Knowledge Base tanpa diproses—sama sekali tidak cukup.** Baik disimpan dalam database vektor eksternal dan disuntikkan ke dalam konteks melalui retrieval, atau ditempatkan secara langsung dalam konteks yang panjang, tanpa ekstraksi pengetahuan dan prapemrosesan terstruktur, model tidak dapat menggunakan informasi ini secara efisien dan andal. Mekanisme attention model pada dasarnya adalah sistem soft retrieval berbasis kesamaan, bukan mesin berpikir yang secara aktif meringkas, menggeneralisasi, dan membangun hierarki pengetahuan. Jadi komputasi harus diinvestasikan pada tahap pengindeksan untuk secara aktif mengekstrak, mengabstraksi, dan menyusun pengetahuan mentah—mengompresi "100 kasus individu" menjadi ringkasan statistik, menyaring "kasus-kasus individual yang tersebar di ratusan tiket" menjadi aturan eksplisit yang menyatakan batasnya sendiri.
 
 ### Pengindeksan Terstruktur: Dari Information Retrieval ke Knowledge Modeling
 
@@ -498,7 +558,7 @@ Oleh karena itu, strategi yang direkomendasikan dalam praktiknya adalah **desain
 
 RAPTOR dan GraphRAG mewakili eksplorasi komunitas akademis terhadap organisasi pengetahuan; [OpenViking](https://github.com/volcengine/OpenViking), yang bersifat open-source oleh Volcano Engine dari ByteDance, mengusulkan filosofi ketiga: **paradigma sistem file**. Ia memperlakukan konteks bukan sebagai fragmen vektor datar ataupun node grafik. Alih-alih, ia memetakan seluruh konteks—memori, sumber daya, keterampilan—ke dalam direktori dan file di dalam sistem file virtual, masing-masing dengan URI unik:
 
-```
+```text
 viking://
 ├── resources/          # Pengetahuan eksternal: dokumen, basis kode, halaman web
 ├── user/memories/      # User Memory: preferensi, kebiasaan

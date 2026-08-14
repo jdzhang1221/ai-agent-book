@@ -35,6 +35,22 @@ OpenAI는 GPT-Live 소개에서 음성 상호작용을 캐스케이드, 턴 기�
 
 [^ch9-12]: OpenAI. *Introducing GPT-Live.* 2026-07-08. https://openai.com/index/introducing-gpt-live/ 이 분류는 ChatGPT Voice 세 세대의 진화를 요약한 글에서 왔으며 엔드투엔드 옴니모달은 “turn-based voice models”에 해당한다.
 
+**스트리밍 취소:**
+
+```python
+while audio_is_arriving:
+    partial = asr.push(audio_chunk)
+    if endpoint_is_probable(partial):
+        candidate = llm.start(partial)
+        if later_audio_changes_meaning(partial):
+            cancel(candidate)                 # speculative cancellation
+        else:
+            tts.enqueue_stable_segments(candidate)
+
+on_final_transcript(text):
+    commit_or_restart(text)
+```
+
 ### 패러다임 1 · 캐스케이드 파이프라인
 
 상용 음성 비서 대부분은 직렬 파이프라인을 사용한다(그림 9-1). VAD가 발화 종료를 판단하고 ASR이 음성을 텍스트로 바꾸며 LLM이 답을 만들고 TTS가 읽어 준다. 모듈식 구조는 개별 최적화를 가능하게 하지만 경계마다 대기가 생긴다.
@@ -157,7 +173,23 @@ GUI 자동화라고도 하는 컴퓨터 사용은 AI가 화면을 관찰하고 �
 3.  실행 계층이 실제 환경에서 행동(마우스 이동, 클릭, 텍스트 입력 등)을 수행합니다.
 4.  인터페이스의 응답을 기다리고 다시 스크린샷을 찍어 다음 루프 반복에 들어갑니다.
 
-![그림 9-6: 컴퓨터 사용 에이전트의 인식-사고-행동 루프](images/fig9-7.svg)
+**Computer Use 안전 루프:**
+
+```python
+observation = capture_screenshot_and_accessibility_tree()
+proposal = model.decide(task, observation)
+action = validate_schema_and_coordinates(proposal)
+
+if action.is_irreversible and not user_or_policy_approval(action):
+    stop("approval required")
+else:
+    execute_in_sandbox_or_scoped_session(action)
+    new_observation = capture_after_settle()
+    if not verify_goal_progress(new_observation, action):
+        rollback_if_possible_or_replan()
+```
+
+![그림 9-7: 컴퓨터 사용 에이전트의 인식-사고-행동 루프](images/fig9-7.svg)
 
 이 루프에는 세 가지 핵심 설계 차원이 있습니다. **행동 공간**(에이전트가 수행할 수 있는 작업), **시각적 그라운딩**(스크린샷에서 대상 요소를 찾는 방법), **모델 아키텍처**(스크린샷에서 올바른 행동을 생성하는 방법)입니다.
 
@@ -165,7 +197,7 @@ GUI 자동화라고도 하는 컴퓨터 사용은 AI가 화면을 관찰하고 �
 
 Anthropic은 완전한 상호작용 능력을 이루는 세 가지 도구 유형을 정의합니다(그림 9-7).
 
-![그림 9-7: 컴퓨터 사용 행동 공간](images/fig9-8.svg)
+![그림 9-8: 컴퓨터 사용 행동 공간](images/fig9-8.svg)
 
 **GUI 조작 도구**(`computer` 도구): 마우스 작업에는 이동(`mouse_move`), 왼쪽/오른쪽/가운데 클릭, 두 번 또는 세 번 클릭, 드래그(`left_click_drag`), 더 정밀한 누르기/놓기(`left_mouse_down`, `left_mouse_up`)가 있습니다. 스크롤(`scroll`)은 네 방향을 지원하고 보조 키와 조합할 수 있습니다. 키보드 작업에는 글자별 입력(`type`, 실제 타이핑을 모방해 글자 사이에 12ms 간격), 키 조합(`key`, 예: `Ctrl+C`), 키 누르고 있기(`hold_key`)가 있습니다. 인식 행동에는 스크린샷 찍기, 커서 위치 가져오기(`cursor_position`), 기다리기(`wait`)가 있습니다.
 
@@ -212,7 +244,7 @@ Anthropic은 완전한 상호작용 능력을 이루는 세 가지 도구 유형
 모델은 ID만 출력하면 되고 시스템이 해당 요소의 중심을 자동 클릭합니다. 모든 주석 데이터를 여전히 모델에 보내야 하므로 토큰을 절약하지는 않지만, 분할 모델이 일으킬 수 있는 누락 탐지와 거짓 양성을 피하면서 정확하고 안정적인 위치 찾기를 제공합니다.
 
 
-![그림 9-8: Set-of-Mark와 구조화된 요소 색인 비교(browser-use 구현)](images/fig9-9.svg)
+![그림 9-9: Set-of-Mark와 구조화된 요소 색인 비교(browser-use 구현)](images/fig9-9.svg)
 
 **순수 좌표 예측.**
 
@@ -221,7 +253,7 @@ Anthropic은 완전한 상호작용 능력을 이루는 세 가지 도구 유형
 좌표 예측 방식에서 모델의 좌표 이해는 학습에 사용한 해상도에 크게 의존합니다(그림 9-9). Claude는 XGA(1024×768), WXGA(1280×800), FWXGA(1366×768)를 사용해 학습했습니다. 입력 스크린샷 해상도가 맞지 않으면 모델의 예측 좌표가 체계적으로 이동합니다. 작은 지도에서 거리를 잰 뒤 큰 지도에 그대로 적용하는 것과 같습니다. 따라서 도구 계층에 양방향 좌표 스케일링 메커니즘을 구현해야 하며, 이미지가 불균일하게 늘어나 좌표 판단이 편향되지 않도록 종횡비에 따라 대상 해상도를 **선택**해야 합니다. 예를 들어 실제 화면 해상도가 2560×1440(16:9)이면 Claude가 지원하는 세 선택지 가운데 종횡비가 16:9에 가장 가까운 FWXGA(1366×768)가 가장 적합합니다. 스크린샷을 1366×768로 비례 축소해 모델에 넣고 모델이 클릭 좌표 (683, 384)를 출력하면 실제 좌표 (683×2560/1366, 384×1440/768) ≈ (1280, 720)으로 역매핑합니다. 반대로 16:9 이미지를 4:3인 1024×768에 억지로 늘리면 이미지가 가로로 압축되어 모델의 예측 좌표가 체계적으로 이동합니다.
 
 
-![그림 9-9: 해상도 매칭과 양방향 좌표 스케일링](images/fig9-10.svg)
+![그림 9-10: 해상도 매칭과 양방향 좌표 스케일링](images/fig9-10.svg)
 
 
 세 경로의 선택은 다음과 같이 요약할 수 있습니다. **구조화된 정보가 있다면 DOM/접근성 트리 색인을 우선**하여 가장 정확하고 안정적으로 위치를 찾으십시오. Photoshop 같은 네이티브 데스크톱 소프트웨어, canvas/WebGL 렌더링 인터페이스, 게임처럼 **구조화된 정보가 없다면 시각 주석(원래 SoM 경로)이나 좌표 예측을 사용**하십시오. 시각 주석은 위치 찾기를 객관식 문제로 바꾸므로 특수 학습을 받지 않은 범용 모델에 더 친화적입니다. GUI 위치 찾기를 특별히 학습한 모델에는 주석 단계를 없앤 좌표 예측이 더 직접적입니다. 두 접근법 모두 작은 요소와 밀집된 인터페이스에서는 여전히 어려움을 겪습니다.
@@ -329,7 +361,7 @@ Anthropic은 완전한 상호작용 능력을 이루는 세 가지 도구 유형
 2계층 아키텍처의 실행 계층에서 RT-2, OpenVLA, π₀라는 세 대표 모델은 모두 VLA 제어, 즉 카메라 이미지와 언어 지시에 따라 로봇 행동을 실시간으로 출력하는 데 초점을 둡니다(그림 9-10). 행동 표현에는 불연속 행동 토큰과 연속 궤적 생성이라는 서로 다른 두 접근법이 있습니다.
 
 
-![그림 9-10: VLA 아키텍처(Vision-Language-Action)](images/fig9-11.svg)
+![그림 9-11: VLA 아키텍처(Vision-Language-Action)](images/fig9-11.svg)
 
 
 **RT-2와 OpenVLA: 불연속 행동 토큰 경로.**
@@ -348,7 +380,7 @@ Anthropic은 완전한 상호작용 능력을 이루는 세 가지 도구 유형
 
 6장의 시뮬레이션 절에서 이미 시뮬레이션-현실 간극이 생기는 이유와 도메인 무작위화로 대응하는 방법을 설명했으므로 여기서는 반복하지 않습니다. 요약하면 시뮬레이션은 실제 세계의 물리, 시각, 하드웨어를 완벽히 재현할 수 없으므로 학습 중 해당 매개변수를 넓은 범위에서 무작위화하여 정책이 이러한 변화에 견고한 표현을 배우게 합니다(그림 9-11). 이제 그 원칙을 실제 로봇 팔에 적용하는 방법을 살펴보겠습니다.
 
-![그림 9-11: Sim2Real 간극과 도메인 무작위화](images/fig9-12.svg)
+![그림 9-12: Sim2Real 간극과 도메인 무작위화](images/fig9-12.svg)
 
 이 접근법은 여러 주목할 만한 성공을 낳았습니다. OpenAI의 Dactyl 프로젝트는 손 안에서 큐브 방향 바꾸기를 달성했고 후속 연구는 자동 도메인 무작위화(ADR)로 한 손으로 루빅스 큐브를 맞췄습니다. ETH Zurich의 ANYmal 4족 보행 로봇은 눈과 자갈 같은 어려운 야외 지형에서 견고한 이동을 보여 주었습니다.
 
@@ -386,9 +418,9 @@ Anthropic은 완전한 상호작용 능력을 이루는 세 가지 도구 유형
 
 계획과 실행은 겹쳐서 진행할 수 있습니다. 안전한 접두부가 완성되면 계획기는 나머지 부분을 계속 계획하면서 완전한 명령을 실행기에 스트리밍합니다. 명령 이벤트는 완전하고 감사 가능해야 합니다.
 
-~~~json
+```text
 {"type":"command.commit","seq":12,"command_id":"desk-02","command":"put paper in bin","preconditions":["paper.visible","bin.reachable"],"success":"paper_count=0","cancel_at":"before_grasp"}
-~~~
+```
 
 실행기는 `started`, `succeeded`, `cancelled`, `failed` 상태를 보고합니다. 계획기는 이 관찰로 의존성을 갱신하고, 큐가 오래되었거나 가득 차면 backpressure를 적용합니다. 스트리밍은 첫 번째 안전한 행동까지의 시간을 줄여 주지만, 불완전한 JSON이나 검증되지 않은 모델의 생각을 실행해도 된다는 뜻은 아닙니다.
 
@@ -396,13 +428,26 @@ Anthropic은 완전한 상호작용 능력을 이루는 세 가지 도구 유형
 
 OpenVLA는 문자 그대로 projector만 업데이트해 학습한 것이 아닙니다. 원 논문은 전체 fine-tuning, vision encoder 동결, 마지막 계층만 학습하는 방식, LoRA 변형도 보고합니다. 그러나 더 근본적인 비판은 여전히 유효합니다. 거대한 텍스트·이미지 사전 학습 말뭉치가 훨씬 작은 로봇 데이터셋과 좁은 적응 경로로 연결되고, 저비용 적응에서는 새로운 행동이 projector, LoRA 모듈 또는 action head에 집중되기 쉽습니다. 행동 복제는 “관찰 + 지시 → action chunk”를 학습할 뿐, 반사실적인 물리적 결과를 학습하지 않습니다. embodiment별 행동 공간과 오래된 action chunk도 전이를 제한합니다. 언어 backbone이 ‘컵’이라는 단어를 안다고 해서 마찰, 액체, 접촉, 전원 케이블의 거동까지 아는 것은 아닙니다.
 
+**액션 청크 선점:**
+
+```python
+chunk = vla(current_observation, skill)
+for action in chunk:
+    low_level.execute(action)
+    if safety_event() or observation_changed_significantly():
+        low_level.stop()
+        discard_remaining(chunk)
+        reobserve_and_replan()
+        break
+```
+
 ### 월드 모델
 
 월드 모델은 행동 가능한 전이를 학습합니다.
 
-~~~text
+```text
 상태 + 후보 행동 -> 예측된 미래 상태 -> 행동을 선택하고 검증
-~~~
+```
 
 이는 V-JEPA만을 뜻하지 않습니다. 잠재 예측 모델(V-JEPA 2), 상호작용형 생성 모델(Genie 3, Cosmos), World-Action Model(GeniWorld, Robust-WAM), 라벨 없는 동영상에서 latent action을 학습하는 모델(LAWM-3D), 모델 기반 RL(Dreamer, MuZero)까지 포함하는 더 넓은 계열입니다. 대규모 관찰에서 학습하고, 실행 전에 반사실적 행동의 결과를 시험하며, 공유 동역학과 embodiment별 제어를 분리하고, 예측과 현실이 어긋나면 다시 계획할 수 있다는 점이 핵심 가치입니다.
 

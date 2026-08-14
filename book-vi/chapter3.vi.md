@@ -20,7 +20,7 @@ Bản chất của hệ thống bộ nhớ người dùng là một quá trình 
 
 Sử dụng một ví dụ cụ thể để hiểu quá trình này. Giả sử rằng người dùng có cuộc trò chuyện sau với Agent:
 
-```
+```text
 User: Help me book a flight to Tokyo next Friday. I prefer window seats
       and I'm vegetarian, so I'll need a special meal.
 Agent: I'll search for flights to Tokyo for next Friday...
@@ -32,12 +32,27 @@ User: Yes, and use my United MileagePlus number 12345678.
 
 Sau khi cuộc trò chuyện kết thúc, framework Agent sẽ gọi một LLM đặc biệt để phân tích nội dung cuộc trò chuyện và trích xuất thông tin đáng nhớ lâu dài:
 
-```
+```text
 Extracted memories:
 - User prefers window seats (preference)
 - User is vegetarian, needs special meals on flights (dietary restriction)
 - User's United MileagePlus number: 12345678 (loyalty program)
 - User has travel plans to Tokyo (recent activity)
+```
+
+**Vòng đời memory:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
 ```
 
 Hãy lưu ý một số đặc điểm chính của quá trình trích xuất này:
@@ -127,50 +142,74 @@ Nó chia quá trình cập nhật bộ nhớ thành hai giai đoạn [^uac]: **g
 
 Dưới đây là một ví dụ đơn giản. Trong giai đoạn có cấu trúc, hộ chiếu và hành trình của người dùng được lưu trữ thành trạng thái có kiểu:
 
-```python
-from datetime import date
+**Log chỉ-ghi-thêm và checkpoint:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-# ...phần còn lại của hành trình
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**Trạng thái người dùng có kiểu:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 Với trạng thái có kiểu, ba việc trước đây chỉ có thể thực hiện được bằng cách "đọc văn bản rồi tính nhẩm" LLM giờ đã trở thành các mã xác định:
 
 Một, **số liệu thống kê tổng hợp**. "Năm ngoái tôi đã đi nước ngoài bao nhiêu lần?"—trong bộ nhớ văn bản, bạn phải gọi lại tất cả hành trình và đếm từng cái; số bản ghi càng nhiều thì lỗi càng dễ xảy ra. Với User as Code, đó chỉ là một biểu thức và độ chính xác gần 100%[^uac]:
 
+**Gộp xác định:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 Thứ hai, **phát hiện xung đột**. Đặt hai trạng thái "thuốc hiện tại" và "tiền sử dị ứng" lại với nhau, một chức năng có thể tham chiếu chéo theo danh mục thuốc và phát hiện ra những mâu thuẫn nằm rải rác trong các cuộc trò chuyện khác nhau và hầu như không thể tự động tương quan dưới dạng văn bản:
 
+**Phát hiện xung đột:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"Xung đột về thuốc: {med.name} thuộc lớp {med.drug_class},"
-                       f"và bệnh nhân bị dị ứng nặng với {allergy.allergen}")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 Thứ ba, **thực thi ràng buộc**. Agent có thể củng cố chức năng kiểm tra như vậy và tự động kích hoạt nó mỗi khi trạng thái được cập nhật - nó có thể chủ động nhắc nhở người dùng mà không cần phải nói hay tìm kiếm. Ví dụ: hạn chế hiệu lực của hộ chiếu: nếu ngày khởi hành của chuyến đi nước ngoài ít hơn 180 ngày trước khi hộ chiếu hết hạn, cảnh báo sẽ được kích hoạt.
 
+**Thực thi ràng buộc:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"Hộ chiếu {passport.expiry_date} hết hạn, chuyến đi {trip.destination} "
-                       f"chỉ còn {days} ngày, vui lòng gia hạn càng sớm càng tốt")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: Để có thiết kế và đánh giá hoàn chỉnh về dự án biến bộ nhớ người dùng thành mã thực thi, hãy xem Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026.
@@ -297,6 +336,21 @@ Mẫu của cả hai ví dụ hoàn toàn giống nhau: **Truy xuất các đo�
 
 Chất lượng của trình tìm kiếm trực tiếp xác định tính hiệu quả của RAG - nếu không thể truy xuất được các mảnh liên quan, LLM sẽ vô dụng cho dù nó có mạnh đến đâu. Phần này trước tiên xem xét quy trình đầu tiên của việc nhập tài liệu vào cơ sở tri thức - phân đoạn, sau đó tập trung vào hai tuyến kỹ thuật chính của bộ truy xuất: nhúng dày đặc (dựa trên hiểu biết ngữ nghĩa) và nhúng thưa thớt (dựa trên kết hợp từ khóa) và cách kết hợp cả hai.
 
+**Pipeline RAG lai:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
 
 ![Hình 3-5 Quy trình truy vấn RAG: truy xuất, nâng cao và tạo ](images/fig3-5.svg)
 
@@ -378,9 +432,15 @@ Trong đó, `TF(t,d)` là số lần thuật ngữ $t$ xuất hiện trong tài 
 
 Có thể xem BM25 (Okapi BM25) là cách sửa kinh điển cho hai hạn chế này. Nó giữ trọng số IDF dành cho các từ hiếm, đồng thời bổ sung cơ chế bão hòa tần suất và chuẩn hóa độ dài tài liệu:
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-Trong đó, $q_i$ là một từ trong truy vấn, $|D|$ là độ dài tài liệu và $\text{avgdl}$ là độ dài tài liệu trung bình của kho ngữ liệu. Như Hình 3-8 minh họa, $k_1$ kiểm soát tốc độ bão hòa của tần suất, khiến mỗi lần lặp thêm mang lại mức tăng nhỏ dần; $b$ kiểm soát cường độ chuẩn hóa độ dài, giúp so sánh công bằng hơn giữa các tài liệu dài ngắn khác nhau. Vì vậy, 10 lần xuất hiện thường đóng góp ít hơn gấp đôi so với 5 lần, và cùng một TF sẽ nhận trọng số thấp hơn trong tài liệu dài hơn. Các giá trị tham số và phép tính cụ thể được trình bày trong Thử nghiệm 3-5.
+Trong đó, $q_i$ là một từ trong truy vấn, $|D|$ là độ dài tài liệu và $\text{avgdl}$ là độ dài tài liệu trung bình của kho ngữ liệu. $\text{IDF}_{\text{BM25}}$ mang chỉ số dưới vì đây không phải cùng một công thức với $\text{IDF}$ của TF-IDF ở trên: BM25 chuyển sang một biến thể ổn định hơn.
+
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
+
+Trực giác không đổi—từ càng hiếm thì trọng số càng cao—chỉ có cách đo là khác. Tử số trở thành số tài liệu *không* chứa từ đó, $N - \text{DF}(t)$, thay vì tổng số tài liệu $N$, nên tỷ lệ này cho biết ngay số tài liệu không chứa từ đó gấp bao nhiêu lần số tài liệu có chứa nó; việc cộng thêm 0,5 vào cả tử số và mẫu số giúp làm trơn kết quả, khiến công thức vẫn xác định ở hai trường hợp cực đoan là $\text{DF}(t) = 0$ và $\text{DF}(t) = N$. Cái giá phải trả là một từ xuất hiện trong hơn một nửa số tài liệu ($\text{DF}(t) > N/2$) sẽ nhận trọng số âm, nên các cài đặt thực tế thường đặt cho nó một ngưỡng dưới. Biến thể này bắt nguồn từ mô hình truy hồi xác suất và trong tài liệu chuyên ngành được gọi là trọng số Robertson–Spärck Jones.
+
+Như Hình 3-8 minh họa, $k_1$ kiểm soát tốc độ bão hòa của tần suất, khiến mỗi lần lặp thêm mang lại mức tăng nhỏ dần; $b$ kiểm soát cường độ chuẩn hóa độ dài, giúp so sánh công bằng hơn giữa các tài liệu dài ngắn khác nhau. Vì vậy, 10 lần xuất hiện thường đóng góp ít hơn gấp đôi so với 5 lần, và cùng một TF sẽ nhận trọng số thấp hơn trong tài liệu dài hơn. Các giá trị tham số và phép tính cụ thể được trình bày trong Thử nghiệm 3-5.
 
 
 ![Hình 3-8 Cơ chế tính điểm BM25](images/fig3-8.svg)
@@ -390,7 +450,7 @@ Trong đó, $q_i$ là một từ trong truy vấn, $|D|$ là độ dài tài li�
 >
 > Để khám phá hoạt động bên trong dịch vụ sản xuất thưa thớt, dự án `sparse-embedding` phát triển công cụ tìm kiếm thưa thớt dựa trên kỹ thuật BM25 từ đầu theo cách mang tính giáo dục. Giá trị cốt lõi của dự án không nằm ở việc tối ưu hiệu suất tối đa mà ở tính minh bạch hoàn toàn của quy trình: quan sát rõ toàn bộ quá trình lập chỉ mục tài liệu - tiền xử lý văn bản (tách từ và loại bỏ các từ dừng như "of" và "the" vốn hầu như không mang giá trị truy xuất), xây dựng chỉ mục đảo và tính các giá trị TF và IDF. Cái gọi là chỉ mục đảo ngược là bảng ánh xạ ngược từ sang tài liệu - chỉ mục thông thường là "cho một tài liệu, liệt kê các từ nó chứa", còn chỉ mục đảo thì ngược lại, "cho một từ, tìm ngay tất cả tài liệu chứa nó". Nó giống như trang chỉ mục thuật ngữ ở cuối một cuốn sách: bạn tra cứu "TCP" và bạn biết rằng từ đó được đề cập ở trang 45, 112 và 203.
 >
-> Nhật ký truy vấn hiển thị chi tiết từng bước tính toán của BM25. Vẫn lấy truy vấn "chưng cất mô hình" làm ví dụ - sau đây là nhật ký đang chạy trên kho ngữ liệu mẫu nhỏ (tổng cộng N=10 tài liệu) đi kèm với dự án, do đó số lượt trúng ít hơn nhiều so với kịch bản minh họa 100 bài viết trước đó. Để tạo điều kiện thuận lợi cho người đọc tính toán và sao chép bằng tay, ví dụ này sửa các tham số BM25 k1=1,5, b=0,75 và độ dài tài liệu trung bình avgdl=250 từ; IDF sử dụng dạng chuẩn IDF=ln((N−df+0.5)/(df+0.5)) và df là số lượng tài liệu có chứa từ:
+> Nhật ký truy vấn hiển thị chi tiết từng bước tính toán của BM25. Vẫn lấy truy vấn "chưng cất mô hình" làm ví dụ - sau đây là nhật ký đang chạy trên kho ngữ liệu mẫu nhỏ (tổng cộng N=10 tài liệu) đi kèm với dự án, do đó số lượt trúng ít hơn nhiều so với kịch bản minh họa 100 bài viết trước đó. Để tạo điều kiện thuận lợi cho người đọc tính toán và sao chép bằng tay, ví dụ này sửa các tham số BM25 k1=1,5, b=0,75 và độ dài tài liệu trung bình avgdl=250 từ; IDF sử dụng dạng BM25 nêu trên IDF=ln((N−df+0.5)/(df+0.5)) và df là số lượng tài liệu có chứa từ:
 >
 > ```
 > Phân đoạn từ truy vấn: ["model", "chưng cất"]
@@ -469,9 +529,9 @@ Vấn đề sâu xa hơn là ngay cả khi chúng ta xây dựng hệ thống RA
 
 **Trường hợp 1: Đếm mèo đen và mèo trắng**. Trong Chương 2, chúng tôi đã sử dụng ví dụ đếm mèo đen và mèo trắng để minh họa rằng "sự chú ý là truy xuất mềm và thông tin thống kê cần được tinh chỉnh trước" - ngay cả khi tất cả 100 trường hợp được tải vào cửa sổ ngữ cảnh, mô hình cũng khó có thể hoàn thành việc đếm chính xác. Vấn đề tương tự lại xuất hiện ở quy mô cơ sở tri thức, kèm theo một số trở ngại mới. Giả sử cơ sở tri thức có 100 tài liệu trường hợp độc lập (90 mèo đen, 10 mèo trắng, mỗi tài liệu là một khối văn bản độc lập). Khi người dùng hỏi "Tỷ lệ là gì?": Đầu tiên là **top-k cắt ngắn** - bị giới hạn bởi top-k (chẳng hạn như 20), hầu hết các trường hợp sẽ không được truy xuất; thứ hai, **điểm truy xuất rất đa dạng** - ngay cả khi tăng giá trị k, do các mô tả riêng lẻ khác nhau, điểm tìm kiếm không đồng đều và một số trường hợp vẫn bị bỏ sót; cơ bản nhất là sự sai lệch của **tập hợp nhiều tài liệu** - các bài toán thống kê đòi hỏi phải "xem qua tất cả các tài liệu nhiều lần", trong khi bản chất của việc truy xuất là "tìm những tài liệu phù hợp nhất", cả hai đều mâu thuẫn nhau một cách tự nhiên. Mô hình chỉ có thể đưa ra kết luận sai lầm dựa trên các mẫu không đầy đủ (chẳng hạn như chỉ nhìn thấy 15 con mèo đen và 3 con mèo trắng). Nếu bạn tạo trước và lập chỉ mục tóm tắt "Có 100 con mèo: 90 con mèo đen (90%) và 10 con mèo trắng (10%)", bạn có thể nhận được thông tin chính xác chỉ trong một lần tìm kiếm.
 
-**Trường hợp 2: Suy luận sai về quy tắc chiết khấu Xfinity**. Ba trường hợp lịch sử riêng biệt: John, một cựu chiến binh, đã nộp đơn xin giảm giá thành công, Sarah, một bác sĩ, được giảm giá, và Mike, một giáo viên, được thông báo rằng anh ta không đủ điều kiện. Khi y tá hỏi, bộ truy xuất ưu tiên gọi lại trường hợp B vì "y tá" và "bác sĩ" gần nhau về ngữ nghĩa, và mô hình suy luận sai rằng y tá cũng được hưởng ưu đãi. Bộ truy xuất không gọi lại được trường hợp C cùng lúc (cho biết các ngành nghề khác không đủ điều kiện). Tệ hơn nữa, "y tá" có độ tương đồng về ngữ nghĩa thấp với trường hợp A "cựu chiến binh". Trường hợp này có thể bị xếp hạng thấp và bị bỏ qua, dẫn đến sự hiểu biết một chiều về quy định. Nếu quy tắc "Giảm giá Xfinity chỉ dành cho cựu chiến binh và bác sĩ, các ngành nghề khác không đủ điều kiện" được trích xuất trước và lập chỉ mục, thì bất kể ngành nghề nào được yêu cầu, các quy tắc đầy đủ sẽ có được trong một lần tìm kiếm.
+**Trường hợp 2: Vấn đề ranh giới trong điều kiện hưởng chiết khấu Xfinity**. Lần này cơ sở tri thức là kho phiếu hỗ trợ khách hàng: vài trăm phiếu, mỗi phiếu ghi lại một kết quả xử lý có thật — cựu chiến binh John được duyệt, bác sĩ Sarah nhận được chiết khấu, giáo viên Mike được thông báo rằng anh ta không đủ điều kiện, và cứ thế. Mỗi phiếu chỉ ghi kết luận của một trường hợp riêng lẻ; không phiếu nào ghi phạm vi điều kiện. Khi một y tá hỏi “tôi có đủ điều kiện không?”, các trở ngại chồng lên nhau. Thứ nhất là **thiên lệch láng giềng gần nhất** — “y tá” gần nhất về ngữ nghĩa với “bác sĩ”, nên phiếu của Sarah xếp đầu và mô hình theo đà suy ra rằng y tá cũng đủ điều kiện; nếu phiếu của Mike tình cờ xếp trên, cùng một câu hỏi sẽ nhận câu trả lời ngược lại. **Câu trả lời được quyết định bởi phiếu nào gần truy vấn nhất, chứ không phải bởi chính sách.** Thứ hai là **sự thiếu vắng ngữ nghĩa ranh giới** — trở ngại mà tăng k cũng không giải quyết được: một phát biểu dạng “chỉ ..., mọi ngành nghề khác đều không đủ điều kiện” mang lượng từ toàn xưng và phủ định, không nằm trong bất kỳ phiếu đơn lẻ nào mà chỉ tồn tại trong bao đóng của toàn bộ ngữ liệu. Kho phiếu vốn dĩ chưa từng trả lời “y tá có được tính hay không”, nên buộc mô hình quy nạp một quy tắc toàn xưng từ vài trường hợp riêng lẻ sẽ cho ra kết luận vốn không hề có giá trị. Thứ ba là **sự thiếu vắng tín hiệu về tính đầy đủ** — mô hình không có cách nào biết mình đã thấy trọn quy tắc hay chưa, nên không hỏi lại mà tự tin trả lời dựa trên vài phiếu đang có trong tay. Lời giải vẫn nằm ở giai đoạn lập chỉ mục: đọc ngoại tuyến toàn bộ kho phiếu và lấy chính sách điều kiện chính thức làm chuẩn (chứ không ngoại suy từ vài trường hợp truy xuất được — đó chính là sự ô nhiễm tri thức được cảnh báo ở phần sau), chắt lọc ra một thẻ quy tắc: “Chiết khấu Xfinity áp dụng cho quân nhân tại ngũ và cựu chiến binh, cùng nhân viên y tế có chứng chỉ hành nghề bao gồm y tá; các ngành nghề khác như giáo viên không đủ điều kiện; ngành nghề không được liệt kê cần người xét duyệt.” Khi cả ranh giới lẫn phương án dự phòng đều được ghi rõ, bất kể hỏi về ngành nghề nào, một lần truy xuất là có được quy tắc đầy đủ — mô hình không còn phải quy nạp, chỉ cần đối chiếu.
 
-Hai trường hợp này đã bộc lộ sâu sắc vấn đề cốt lõi: phương pháp RAG đơn giản, tức là đưa các trường hợp hoặc tài liệu gốc trực tiếp vào cơ sở tri thức mà không cần xử lý, là chưa đủ. Cho dù nó được lưu trữ trong cơ sở dữ liệu vectơ bên ngoài và được đưa vào ngữ cảnh thông qua truy xuất hay được đặt trực tiếp trong ngữ cảnh dài, mô hình không thể sử dụng thông tin này một cách hiệu quả và đáng tin cậy nếu không tinh chỉnh kiến thức và tiền xử lý có cấu trúc. Cơ chế chú ý của mô hình thực chất là một hệ thống truy xuất mềm dựa trên sự tương đồng chứ không phải là một cỗ máy tư duy có thể chủ động tổng hợp, trừu tượng hóa và xây dựng các cấp độ kiến thức. Do đó, nguồn lực tính toán phải được đầu tư vào giai đoạn lập chỉ mục để chủ động tinh chỉnh, trừu tượng hóa và cấu trúc kiến thức thô — cô đọng “100 trường hợp riêng lẻ” thành các bản tóm tắt thống kê và chắt lọc “ba trường hợp riêng biệt” thành các quy tắc rõ ràng.
+Hai trường hợp này đã bộc lộ sâu sắc vấn đề cốt lõi: phương pháp RAG đơn giản, tức là đưa các trường hợp hoặc tài liệu gốc trực tiếp vào cơ sở tri thức mà không cần xử lý, là chưa đủ. Cho dù nó được lưu trữ trong cơ sở dữ liệu vectơ bên ngoài và được đưa vào ngữ cảnh thông qua truy xuất hay được đặt trực tiếp trong ngữ cảnh dài, mô hình không thể sử dụng thông tin này một cách hiệu quả và đáng tin cậy nếu không tinh chỉnh kiến thức và tiền xử lý có cấu trúc. Cơ chế chú ý của mô hình thực chất là một hệ thống truy xuất mềm dựa trên sự tương đồng chứ không phải là một cỗ máy tư duy có thể chủ động tổng hợp, trừu tượng hóa và xây dựng các cấp độ kiến thức. Do đó, nguồn lực tính toán phải được đầu tư vào giai đoạn lập chỉ mục để chủ động tinh chỉnh, trừu tượng hóa và cấu trúc kiến thức thô — cô đọng “100 trường hợp riêng lẻ” thành các bản tóm tắt thống kê và chắt lọc “các trường hợp riêng lẻ nằm rải rác trong hàng trăm phiếu” thành quy tắc rõ ràng có nêu cả ranh giới.
 
 ### Lập chỉ mục có cấu trúc: Từ truy xuất thông tin đến mô hình hóa kiến thức
 
@@ -515,7 +575,7 @@ Do đó, chiến lược được đề xuất trong thực tế là **bổ sung
 
 RAPTOR và GraphRAG đại diện cho hành trình khám phá tổ chức tri thức của cộng đồng học thuật, trong khi [OpenViking](https://github.com/volcengine/OpenViking), có nguồn mở bởi Bytedance Volcano Engine, đề xuất triết lý thứ ba: **Mô hình hệ thống tệp**. Thay vì xử lý các ngữ cảnh như các đoạn vectơ phẳng hoặc các nút biểu đồ, nó ánh xạ tất cả các ngữ cảnh—bộ nhớ, tài nguyên, kỹ năng—dưới dạng thư mục và tệp trong hệ thống tệp ảo, với mỗi mục nhập có một URI duy nhất:
 
-```
+```text
 viking://
 ├── resources/ # Kiến thức bên ngoài: tài liệu, code base, trang web
 ├── user/memories/ # Ký ức người dùng: sở thích, thói quen

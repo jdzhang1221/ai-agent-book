@@ -20,7 +20,7 @@ Gerçekten kişiselleştirilmiş, sürekli bir hizmet sunan bir AI Agent inşa e
 
 Bu süreci somut bir örnekle anlayalım. Bir kullanıcı ve Agent'ın şu konuşmayı yaptığını varsayalım:
 
-```
+```text
 Kullanıcı: Gelecek Cuma Tokyo'ya bir uçuş ayırtmama yardım et. Pencere kenarı
       koltukları tercih ederim ve vejetaryenim, bu yüzden özel bir yemeğe ihtiyacım olacak.
 Agent: Gelecek Cuma için Tokyo'ya uçuşları arayacağım...
@@ -32,12 +32,27 @@ Kullanıcı: Evet, ve United MileagePlus numaramı kullan: 12345678.
 
 Bu konuşma bittikten sonra, Agent çerçevesi diyaloğu analiz etmek ve uzun vadede hatırlanmaya değer bilgiyi çıkarmak için özel bir LLM çağırır:
 
-```
+```text
 Çıkarılan bellekler:
 - Kullanıcı pencere kenarı koltukları tercih ediyor (tercih)
 - Kullanıcı vejetaryen, uçuşlarda özel yemeğe ihtiyaç duyuyor (diyet kısıtlaması)
 - Kullanıcının United MileagePlus numarası: 12345678 (sadakat programı)
 - Kullanıcının Tokyo'ya seyahat planları var (son etkinlik)
+```
+
+**Bellek yaşam döngüsü:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
 ```
 
 Bu çıkarım sürecinin birkaç kilit özelliğine dikkat edin:
@@ -127,50 +142,74 @@ Bellek güncellemelerini iki aşamaya ayırır[^uac]: **bellek aşaması** (her 
 
 Aşağıda basitleştirilmiş bir örnek var. Yapılandırma aşaması, kullanıcının pasaportunu ve gezilerini tipli durum olarak depolar:
 
-```python
-from datetime import date
+**Yalnızca eklemeli günlük ve checkpoint:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-    # ... kalan geziler
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**Tipli kullanıcı durumu:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 Tipli durumla, daha önce LLM'in "metni okuyup zihinsel aritmetik yapmasını" gerektiren üç görev artık deterministik kod haline gelir:
 
 Birincisi, **toplu istatistik (aggregation)**. "Geçen yıl kaç kez yurt dışına çıktım?"—metin belleğiyle tüm gezileri hatırlayıp birer birer saymanız gerekir ve kayıt sayısı arttıkça hata olasılığı yükselir; User as Code ile bu tek bir ifadedir ve neredeyse %100 doğruluk elde eder[^uac]:
 
+**Deterministik toplama:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 İkincisi, **çelişki tespiti (conflict detection)**. "Mevcut ilaçları" ve "alerji geçmişini" yan yana yerleştirerek, tek bir fonksiyon bunları ilaç sınıfına göre çapraz referanslayabilir, metin formunda otomatik olarak ilişkilendirilmesi neredeyse imkânsız olacak, farklı konuşmalara dağılmış çelişkileri ortaya çıkarabilir:
 
+**Çakışma tespiti:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"İlaç çakışması: {med.name}, {med.drug_class} sınıfına ait, "
-                       f"ama hasta {allergy.allergen}'e ciddi alerjisi var")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 Üçüncüsü, **kısıt uygulama (constraint enforcement)**. Agent, bu tür kontrol fonksiyonlarını kalıcı hale getirebilir ve durum her güncellendiğinde bunları otomatik olarak tetikleyebilir—kullanıcının konuşmasına veya Agent'ın herhangi bir şey getirmesine gerek kalmadan. Örneğin, bir pasaport geçerlilik kısıtı: uluslararası bir gezinin kalkış tarihi pasaportun süresinin dolmasından 180 günden az önceyse uyar.
 
+**Kısıtların uygulanması:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"Pasaportun süresi {passport.expiry_date} tarihinde doluyor, "
-                       f"{trip.destination} gezisine yalnızca {days} gün kaldı. Lütfen en kısa sürede yenileyin.")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: Kullanıcı belleğini çalıştırılabilir bir kod projesi olarak inşa etmenin eksiksiz tasarımı ve değerlendirmesi şurada bulunabilir: Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026.
@@ -297,6 +336,21 @@ Kalıp her iki örnekte de aynıdır: **İlgili parçaları getir → Context'e 
 
 Retriever'ın kalitesi RAG'ın etkinliğini doğrudan belirler—ilgili parçaları getiremezse, en güçlü LLM bile üzerinde çalışacak bir şeye sahip olmaz. Bu bölüm, dokümanları bilgi tabanına sokmanın ilk adımıyla—chunking (parçalama)—başlar, ardından retriever'ın iki ana teknik yoluna, dense embedding'lere (semantik anlama) ve sparse embedding'lere (anahtar kelime eşleştirme) ve bunların nasıl birleştirileceğine döner.
 
+**Hibrit RAG hattı:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
 
 ![Şekil 3-5: RAG Sorgu Akışı: Retrieval, Augmentation ve Generation](images/fig3-5.svg)
 
@@ -378,9 +432,15 @@ Burada `TF(t,d)`, $t$ teriminin $d$ belgesinde kaç kez geçtiğini; `DF(t)`, bu
 
 BM25 (Okapi BM25), bu iki sınırlamaya yönelik klasik bir düzeltme olarak görülebilir. Nadir terimler için IDF ağırlığını korurken terim frekansı doygunluğu ve belge uzunluğu normalizasyonu ekler:
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-Burada $q_i$ sorgudaki bir terim, $|D|$ belge uzunluğu ve $\text{avgdl}$ külliyattaki ortalama belge uzunluğudur. Şekil 3-8'de gösterildiği gibi, $k_1$ terim frekansının ne kadar hızlı doygunluğa ulaştığını kontrol eder; böylece her ek tekrarın marjinal katkısı azalır. $b$ ise uzunluk normalizasyonunun gücünü belirleyerek farklı uzunluktaki belgelerin daha adil karşılaştırılmasını sağlar. Bu nedenle 10 tekrar genellikle 5 tekrarın tam iki katından az katkı verir ve aynı TF daha uzun bir belgede daha düşük ağırlık alır. Belirli parametreler ve hesaplama Deney 3-5'te ele alınır.
+Burada $q_i$ sorgudaki bir terim, $|D|$ belge uzunluğu ve $\text{avgdl}$ külliyattaki ortalama belge uzunluğudur. $\text{IDF}_{\text{BM25}}$ ifadesinin alt simge taşımasının nedeni, bunun yukarıdaki TF-IDF'in $\text{IDF}$'i ile aynı formül olmamasıdır: BM25 daha sağlam bir varyanta geçer.
+
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
+
+Sezgi değişmez —terim ne kadar nadirse ağırlığı o kadar büyüktür—, değişen yalnızca ölçme biçimidir. Payda toplam belge sayısı $N$ yerine terimi *içermeyen* belge sayısı $N - \text{DF}(t)$ yer alır; böylece oran, terimi içermeyen belgelerin içerenlerden kaç kat fazla olduğunu doğrudan ifade eder. Pay ve paydaya 0,5 eklenmesi sonucu yumuşatır ve formül $\text{DF}(t) = 0$ ile $\text{DF}(t) = N$ uç durumlarında da tanımlı kalır. Bedeli ise, belgelerin yarısından fazlasında geçen bir terimin ($\text{DF}(t) > N/2$) negatif ağırlık almasıdır; bu yüzden uygulamalar genellikle bir alt sınır koyar. Bu varyant olasılıksal erişim modelinden gelir ve literatürde Robertson–Spärck Jones ağırlığı olarak bilinir.
+
+Şekil 3-8'de gösterildiği gibi, $k_1$ terim frekansının ne kadar hızlı doygunluğa ulaştığını kontrol eder; böylece her ek tekrarın marjinal katkısı azalır. $b$ ise uzunluk normalizasyonunun gücünü belirleyerek farklı uzunluktaki belgelerin daha adil karşılaştırılmasını sağlar. Bu nedenle 10 tekrar genellikle 5 tekrarın tam iki katından az katkı verir ve aynı TF daha uzun bir belgede daha düşük ağırlık alır. Belirli parametreler ve hesaplama Deney 3-5'te ele alınır.
 
 
 ![Şekil 3-8: BM25 Puanlama Mekanizması](images/fig3-8.svg)
@@ -390,7 +450,7 @@ Burada $q_i$ sorgudaki bir terim, $|D|$ belge uzunluğu ve $\text{avgdl}$ külli
 >
 > Sparse retrieval'ın iç işleyişini açığa çıkarmak için, `sparse-embedding` projesi öğretici bir araç olarak sıfırdan BM25 tabanlı bir sparse vektör arama motoru uygular. Değeri performans sıkmakta değil, tam şeffaflıktadır. Zengin loglama ve görselleştirme arayüzleri aracılığıyla, tüm doküman indeksleme sürecini net biçimde gözlemleyebiliriz: metin ön işleme (tokenizasyon ve neredeyse hiç retrieval değeri taşımayan Çince durak kelimelerinin—"的" ve "了" gibi, İngilizce'deki "the" veya "of" kadar yaygın işlev kelimeleri—kaldırılması), bir ters indeks (inverted index) inşa etme ve TF ile IDF değerlerini hesaplama. Bir ters indeks, kelimelerden dokümanlara ters bir eşleme tablosudur—normal bir indeks "bir doküman verildiğinde, içerdiği kelimeleri listele" iken, bir ters indeks tam tersini yapar: "bir kelime verildiğinde, onu içeren tüm dokümanları hemen bul." Bu, bir kitabın arkasındaki terim indeksine benzer: "TCP"yi ararsınız, size 45, 112 ve 203. sayfalarda bahsedildiğini söyler.
 >
-> Bir sorgu sırasında, log BM25 hesaplamasının her adımını ayrıntılı biçimde gösterir. Yine "model damıtma" sorgusunu örnek alırsak—aşağıdaki, projeyle birlikte gelen küçük bir örnek külliyattan (N=10 doküman) bir logdur, bu yüzden isabet sayısı daha önce bahsedilen 100 makale senaryosundan çok daha küçüktür. Elle yeniden hesaplamayı kolaylaştırmak için, örnek BM25 parametrelerini k1=1,5, b=0,75 ve ortalama doküman uzunluğunu avgdl=250 kelime olarak sabitler; IDF standart formu kullanır IDF=ln((N−df+0,5)/(df+0,5)), burada df kelimeyi içeren doküman sayısıdır:
+> Bir sorgu sırasında, log BM25 hesaplamasının her adımını ayrıntılı biçimde gösterir. Yine "model damıtma" sorgusunu örnek alırsak—aşağıdaki, projeyle birlikte gelen küçük bir örnek külliyattan (N=10 doküman) bir logdur, bu yüzden isabet sayısı daha önce bahsedilen 100 makale senaryosundan çok daha küçüktür. Elle yeniden hesaplamayı kolaylaştırmak için, örnek BM25 parametrelerini k1=1,5, b=0,75 ve ortalama doküman uzunluğunu avgdl=250 kelime olarak sabitler; IDF yukarıdaki BM25 formunu kullanır: IDF=ln((N−df+0,5)/(df+0,5)), burada df kelimeyi içeren doküman sayısıdır:
 >
 > ```
 > Sorgu token'ları: ["model", "damıtma"]
@@ -469,9 +529,9 @@ Daha derin bir sorun şudur: bir RAG sistemi inşa etsek bile, büyük miktarda 
 
 **Durum 1: Siyah Kedi ve Beyaz Kedi Sayma Problemi.** Bölüm 2'de, "attention'ın yumuşak bir retrieval mekanizması olduğunu ve istatistiksel bilginin önceden çıkarılması gerektiğini" göstermek için siyah kedi ve beyaz kedi sayma örneğini kullandık—100 durumun tümü context penceresine yüklense bile, model doğru sayma yapmakta zorlanır. Aynı sorun, bilgi tabanı ölçeğinde, birkaç yeni engelle birleşerek yeniden ortaya çıkar. Bilgi tabanının 100 bağımsız durum dokümanı içerdiğini (90 siyah kedi, 10 beyaz kedi, her biri bağımsız bir metin parçası) ve kullanıcının "Oran nedir?" diye sorduğunu varsayalım: Birincisi, **top-k kesme**—top-k ile sınırlı (örn. 20), çoğu durum hiç getirilmeyecektir. İkincisi, **eşit olmayan retrieval puanları**—daha büyük bir k ile bile, tek tek durumlar farklı biçimde tanımlanır, puanları dağılır ve bazıları hâlâ kaçırılır. En temel olarak, **dokümanlar arası toplama uyumsuzluğu** vardır—istatistiksel sorular "tüm dokümanlar genelinde sayma" gerektirirken, retrieval'ın doğası "en ilgili birkaçını bulmaktır", bu da doğasında olan bir çelişki yaratır. Model yalnızca eksik bir örneğe (örn. yalnızca 15 siyah kedi ve 3 beyaz kedi görerek) dayanarak yanlış sonuçlar çıkarabilir. "Toplam 100 kedi: 90 siyah kedi (%90) ve 10 beyaz kedi (%10)" gibi önceden üretilmiş bir özet indekslenirse, tek bir retrieval doğru bilgiyi verir.
 
-**Durum 2: Xfinity İndirim Kuralları Hakkında Hatalı Reasoning.** Üç izole geçmiş durum: Gazi John indirim için başarıyla başvurdu, Doktor Sarah bir indirim aldı, Öğretmen Mike'a uygun olmadığı söylendi. Bir hemşire sorduğunda, retriever, "hemşire" ve "doktor" arasındaki semantik benzerlik nedeniyle Durum B'yi öncelikli olarak getirir ve model hemşirelerin de uygun olduğunu yanlış biçimde çıkarır. Retriever, Durum C'yi (diğer mesleklerin uygun olmadığını gösteren) eş zamanlı olarak getiremez. Daha kötüsü, "hemşire"nin Durum A ("gazi") ile semantik benzerliği düşüktür, bu yüzden o durum düşük sıralanıp göz ardı edilebilir, bu da kuralın hâlâ tek taraflı anlaşılmasına yol açar. "Xfinity indirimleri yalnızca gaziler ve doktorlar için mevcuttur; diğer meslekler uygun değildir" gibi önceden çıkarılmış bir kural indekslenirse, sorulan meslek ne olursa olsun tek bir retrieval eksiksiz kuralı sağlar.
+**Durum 2: Xfinity İndirim Uygunluğunda Sınır Problemi.** Bu kez bilgi tabanı bir müşteri destek kaydı arşivi: birkaç yüz kayıt, her biri tek bir gerçek sonucu tutuyor—Gazi John'un başvurusu onaylandı, Doktor Sarah indirimi aldı, Öğretmen Mike'a uygun olmadığı söylendi ve böyle sürüp gidiyor. Her kayıt tek bir bireysel durumun sonucunu yazar; hiçbiri uygunluğun kapsamını yazmaz. Bir hemşire "ben uygun muyum?" diye sorduğunda engeller üst üste biner. Birincisi, **en yakın komşu yanlılığı**—"hemşire" semantik olarak en çok "doktor"a yakındır, bu yüzden Sarah'nın kaydı en üste çıkar ve model bu akışla hemşirelerin de uygun olduğunu çıkarır; Mike'ın kaydı tesadüfen daha üstte sıralansaydı, aynı soru tam tersi yanıtı alırdı. **Yanıtı, sorguya hangi kaydın en yakın düştüğü belirler; politikanın kendisi değil.** İkincisi, **sınır semantiğinin eksikliği**—k'yı büyütmenin çözemeyeceği bir engel: "yalnızca ..., diğer tüm meslekler uygun değildir" biçimindeki bir ifade evrensel niceleyici ve olumsuzlama taşır, tek bir kaydın içinde bulunmaz, yalnızca bütün corpus'un kapanışında (closure) vardır. Arşiv zaten "hemşire sayılır mı" sorusuna hiç yanıt vermez; dolayısıyla modeli bir avuç bireysel durumdan evrensel bir kural çıkarmaya zorlamak, baştan geçerli olmayan bir sonuç üretir. Üçüncüsü, **eksiksizlik sinyalinin yokluğu**—model kuralın tamamını görüp görmediğini anlayamaz, bu yüzden geri sormaz; elindeki birkaç kayıtla kendinden emin yanıt verir. Çözüm yine indeksleme aşamasındadır: tüm kayıt arşivini çevrimdışı baştan sona okuyun ve resmî uygunluk politikasını ölçüt alarak (retrieve edilen birkaç bireysel durumdan ekstrapolasyon yaparak değil—ki bu tam da ileride uyarılan bilgi kirliliğidir) tek bir kural kartı damıtın: "Xfinity indirimleri muvazzaf askerler ve gaziler ile hemşireler dâhil lisanslı sağlık çalışanları için geçerlidir; öğretmenler gibi diğer meslekler uygun değildir; listelenmemiş meslekler insan incelemesi gerektirir." Sınır ve geri düşüş durumu birlikte yazıldığında, hangi meslek sorulursa sorulsun tek bir retrieval eksiksiz kuralı verir—modelin artık çıkarım yapmasına gerek kalmaz, yalnızca eşleştirmesi yeterlidir.
 
-Her iki durum da aynı sonuca işaret eder: **naif RAG—ham durumları veya dokümanları işlenmeden bilgi tabanına atmak—yeterince yakın bile değildir.** İster harici bir vektör veritabanında depolanıp retrieval yoluyla context'e enjekte edilsin, ister doğrudan uzun bir context'e yerleştirilsin, bilgi çıkarımı ve yapılandırılmış ön işleme olmadan, model bu bilgiyi verimli ve güvenilir biçimde kullanamaz. Modelin attention mekanizması özünde benzerlik tabanlı yumuşak bir retrieval sistemidir, aktif olarak özetleyen, genelleyen ve bilgi hiyerarşileri kuran bir düşünme motoru değildir. Bu yüzden hesaplama, indeksleme aşamasında ham bilgiyi aktif olarak çıkarmak, soyutlamak ve yapılandırmak için yatırılmalıdır—"100 tek tek durumu" istatistiksel bir özete sıkıştırmak, "üç izole durumu" açık bir kurala damıtmak.
+Her iki durum da aynı sonuca işaret eder: **naif RAG—ham durumları veya dokümanları işlenmeden bilgi tabanına atmak—yeterince yakın bile değildir.** İster harici bir vektör veritabanında depolanıp retrieval yoluyla context'e enjekte edilsin, ister doğrudan uzun bir context'e yerleştirilsin, bilgi çıkarımı ve yapılandırılmış ön işleme olmadan, model bu bilgiyi verimli ve güvenilir biçimde kullanamaz. Modelin attention mekanizması özünde benzerlik tabanlı yumuşak bir retrieval sistemidir, aktif olarak özetleyen, genelleyen ve bilgi hiyerarşileri kuran bir düşünme motoru değildir. Bu yüzden hesaplama, indeksleme aşamasında ham bilgiyi aktif olarak çıkarmak, soyutlamak ve yapılandırmak için yatırılmalıdır—"100 tek tek durumu" istatistiksel bir özete sıkıştırmak, "yüzlerce kayda dağılmış bireysel durumları" kendi sınırını da söyleyen açık bir kurala damıtmak.
 
 ### Yapılandırılmış İndeksleme: Bilgi Getirmeden Bilgi Modellemeye
 
@@ -515,7 +575,7 @@ Bu yüzden, pratikte önerilen strateji **katmanlı tamamlayıcılıktır**: tem
 
 RAPTOR ve GraphRAG, akademinin bilgi organizasyonu keşifleridir; ByteDance'in Volcano Engine'inin açık kaynak kıldığı [OpenViking](https://github.com/volcengine/OpenViking), üçüncü bir felsefe önerir: **dosya sistemi paradigması**. Context'i ne düz vektör parçaları ne de graf düğümleri olarak ele alır. Bunun yerine, tüm context'i—bellekleri, kaynakları, becerileri—her biri benzersiz bir URI'ye sahip sanal bir dosya sistemi içindeki dizinlere ve dosyalara eşler:
 
-```
+```text
 viking://
 ├── resources/          # Dışsal bilgi: dokümanlar, kod tabanları, web sayfaları
 ├── user/memories/      # Kullanıcı bellekleri: tercihler, alışkanlıklar

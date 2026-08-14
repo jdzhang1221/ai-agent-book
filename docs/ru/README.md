@@ -70,7 +70,7 @@
 
 ## 💻 Запуск сопутствующих экспериментов
 
-Общая базовая версия — **Python 3.10+**. Устанавливайте зависимости по главам из корня репозитория; для другой главы замените `ch1` на `ch2` — `ch10`:
+Общий поддерживаемый диапазон — **Python 3.11–3.13**. Устанавливайте зависимости по главам из корня репозитория; для другой главы замените `ch1` на `ch2` — `ch10`:
 
 ```bash
 # Рекомендуется: воспроизводимое окружение главы из сохранённого uv.lock
@@ -92,7 +92,7 @@ uv run python chapter1/context/main.py
 - Установку `uv` описывает [официальное руководство](https://docs.astral.sh/uv/getting-started/installation/). `pip` по-прежнему поддерживается, но не использует lock-файл.
 - Файлы `requirements.txt` отдельных экспериментов остаются рабочими на время миграции, особенно для изолированных проектов и особых ограничений версий.
 - `all` — широкий CPU-дружественный набор, а не буквально все эксперименты. `uv sync` каждый раз точно синхронизирует текущий выбор, поэтому специальные extra нужно объединять в одной команде, например `uv sync --locked --extra ch2 --extra vllm` или `uv sync --locked --extra ch7 --extra unsloth`; для pip это `python -m pip install -e ".[ch2,vllm]"`.
-- Системные зависимости — браузеры, CUDA, FFmpeg, Ollama, браузеры Playwright и внешние репозитории — устанавливайте по README конкретного эксперимента. Некоторым браузерным экспериментам и экспериментам с памятью нужен Python 3.11+, а некоторым встроенным сторонним компонентам главы 8 — Python 3.12+.
+- Системные зависимости — браузеры, CUDA, FFmpeg, Ollama, браузеры Playwright и внешние репозитории — устанавливайте по README конкретного эксперимента. Некоторым встроенным сторонним компонентам главы 8 нужен Python 3.12+.
 
 ## 🔑 API-ключи
 
@@ -154,7 +154,7 @@ git clone https://github.com/StoneT2000/lerobot-sim2real.git chapter9/lerobot-si
 
 # Глава 10 · Архитектура двух агентов (теперь отдельный проект TalkAct) + Stanford AI Town
 git clone https://github.com/19PINE-AI/TalkAct.git                     chapter10/use-computer-while-calling
-git clone https://github.com/joonspk-research/generative_agents.git    chapter10/generative_agents             # Эксп. 10-7: Stanford AI Town
+git clone https://github.com/joonspk-research/generative_agents.git    chapter10/generative_agents             # Эксп. 10-5: Stanford AI Town
 ```
 
 > Если README проекта указывает конкретный коммит, сделайте `git checkout` на эту версию для воспроизводимости. `use-computer-while-calling` из главы 10 вырос в самостоятельно поддерживаемый [19PINE-AI/TalkAct](https://github.com/19PINE-AI/TalkAct); этот каталог в репозиторий не входит — получите его командой клонирования выше.

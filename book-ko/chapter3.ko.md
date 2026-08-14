@@ -40,6 +40,21 @@ Extracted memories:
 - User has travel plans to Tokyo (recent activity)
 ```
 
+**메모리 수명 주기:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
+```
+
 이 추출 과정에는 몇 가지 핵심 특성이 있습니다.
 
 **선택성**—에이전트는 “검색에서 선택지 세 개를 반환했다”처럼 일시적인 정보는 기억하지 않고 미래에 유용한 사실만 보존합니다.
@@ -127,51 +142,74 @@ LoCoMo와 비슷한 벤치마크, 상용 메모리 제품의 실천을 함께 �
 
 아래는 단순화한 예입니다. 구조화 단계에서 사용자의 여권과 여행을 타입이 지정된 상태로 저장합니다.
 
-```python
-from datetime import date
+**추가 전용 로그와 체크포인트:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-    # ... remaining trips
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**타입이 있는 사용자 상태:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 타입이 지정된 상태를 사용하면 예전에는 LLM이 “텍스트를 읽고 암산”해야 했던 세 가지 작업을 결정론적인 코드로 바꿀 수 있습니다.
 
 첫째, **통계 집계**입니다. “2025년에 해외에 몇 번 갔는가?”라는 질문을 텍스트 메모리로 처리하려면 모든 여행을 회상해 하나씩 세어야 하며 기록이 늘수록 오류가 생기기 쉽습니다. User as Code에서는 표현식 하나로 처리하여 거의 100%의 정확도를 달성합니다[^uac].
 
+**결정론적 집계:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 둘째, **충돌 탐지**입니다. “현재 복용 중인 약”과 “알레르기 이력”을 나란히 두면 함수 하나가 약물 계열을 기준으로 교차 확인할 수 있습니다. 서로 다른 대화에 흩어져 있어 텍스트 형태로는 자동 연결하기가 거의 불가능한 모순을 찾아냅니다.
 
+**충돌 감지:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"Medication conflict: {med.name} belongs to {med.drug_class} class, "
-                       f"but the patient is severely allergic to {allergy.allergen}")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 셋째, **제약 강제**입니다. 에이전트는 이러한 검사 함수를 코드로 만들고 상태가 갱신될 때마다 자동으로 실행할 수 있습니다. 사용자가 별도로 말하거나 에이전트가 무언가 검색할 필요가 없습니다. 예를 들어 국제 여행의 출발일에서 180일 안에 여권이 만료되면 경고하는 여권 유효성 제약을 만들 수 있습니다.
 
+**제약 적용:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"Passport expires on {passport.expiry_date}, only {days} days "
-                       f"between the {trip.destination} departure and passport expiry. "
-                       f"Please renew as soon as possible.")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: 사용자 메모리를 실행 가능한 코드 프로젝트로 구축하는 전체 설계와 평가는 Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026을 참조하세요.
@@ -298,6 +336,21 @@ answer = llm.generate(system="You are a customer service assistant.", context=re
 
 검색기의 품질은 RAG의 효과를 직접 좌우합니다. 관련 조각을 검색하지 못하면 아무리 강력한 LLM도 활용할 자료가 없습니다. 이 절에서는 먼저 문서를 지식 베이스에 넣는 첫 단계인 청킹을 다루고, 이어서 두 가지 주요 검색 방식인 밀집 임베딩(의미 이해)과 희소 임베딩(키워드 일치), 그리고 두 방식을 결합하는 방법을 살펴봅니다.
 
+**하이브리드 RAG 파이프라인:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
 
 ![그림 3-5 RAG 질의 흐름: 검색, 증강, 생성](images/fig3-5.svg)
 
@@ -378,13 +431,15 @@ $$\text{TF-IDF}(t, d) = \text{TF}(t, d) \times \text{IDF}(t), \qquad \text{IDF}(
 
 BM25(Okapi BM25)는 이 두 한계를 보정하는 고전적인 방법입니다. 희귀한 단어에 더 큰 가중치를 주는 IDF는 유지하면서 단어 빈도의 포화와 문서 길이 정규화를 도입합니다.
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-이 BM25 식의 $\text{IDF}(q_i)$는 앞서 소개한 단순 TF-IDF의 IDF와 달리, 실험 3-5와 같은 0.5 보정식을 사용합니다.
+여기서 $q_i$는 질의에 포함된 단어이고, $|D|$는 문서 길이, $\text{avgdl}$은 말뭉치의 평균 문서 길이입니다. $\text{IDF}_{\text{BM25}}$에 아래첨자가 붙은 이유는 이것이 위 TF-IDF의 $\text{IDF}$와 같은 식이 아니기 때문입니다. BM25는 더 견고한 변형을 사용합니다.
 
-$$\text{IDF}(q_i) = \ln\frac{N-\text{DF}(q_i)+0.5}{\text{DF}(q_i)+0.5}$$
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
 
-여기서 $q_i$는 질의에 포함된 단어이고, $|D|$는 문서 길이, $\text{avgdl}$은 말뭉치의 평균 문서 길이입니다. 그림 3-8에서 보듯 $k_1$은 단어 빈도가 포화되는 속도를 조절하여 반복 등장할수록 추가 기여가 줄어들게 합니다. $b$는 문서 길이 정규화 강도를 조절하여 길이가 다른 문서를 더 공정하게 비교할 수 있게 합니다. 따라서 단어가 10번 등장해도 보통 5번 등장했을 때의 정확히 두 배만큼 기여하지 않으며, 같은 단어 빈도라도 긴 문서에서는 가중치가 더 낮습니다. 구체적인 매개변수와 계산 과정은 실험 3-5에서 다룹니다.
+직관은 “단어가 희귀할수록 가중치가 크다”로 그대로이고, 달라진 것은 재는 방식뿐입니다. 분자가 전체 문서 수 $N$이 아니라 “그 단어를 포함하지 않는 문서 수” $N - \text{DF}(t)$가 되어, 이 비율은 그 단어를 포함하지 않는 문서가 포함한 문서보다 몇 배 많은지를 곧바로 나타냅니다. 또 분자와 분모에 각각 0.5를 더해 평활화하므로 $\text{DF}(t)$가 0과 $N$이라는 양극단이어도 식이 정의됩니다. 대가로 단어가 절반이 넘는 문서에 등장하면($\text{DF}(t) > N/2$) 가중치가 음수가 되므로, 구현에서는 보통 하한을 둡니다. 이 형태는 확률적 검색 모델에서 유래했으며 문헌에서는 Robertson–Spärck Jones 가중치라고 부릅니다.
+
+그림 3-8에서 보듯 $k_1$은 단어 빈도가 포화되는 속도를 조절하여 반복 등장할수록 추가 기여가 줄어들게 합니다. $b$는 문서 길이 정규화 강도를 조절하여 길이가 다른 문서를 더 공정하게 비교할 수 있게 합니다. 따라서 단어가 10번 등장해도 보통 5번 등장했을 때의 정확히 두 배만큼 기여하지 않으며, 같은 단어 빈도라도 긴 문서에서는 가중치가 더 낮습니다. 구체적인 매개변수와 계산 과정은 실험 3-5에서 다룹니다.
 
 
 ![그림 3-8 BM25 점수 계산 메커니즘](images/fig3-8.svg)
@@ -393,7 +448,7 @@ $$\text{IDF}(q_i) = \ln\frac{N-\text{DF}(q_i)+0.5}{\text{DF}(q_i)+0.5}$$
 >
 > `sparse-embedding` 프로젝트는 희소 검색의 내부 동작을 낱낱이 보여 주기 위해 교육용 BM25 기반 희소 벡터 검색 엔진을 처음부터 구현합니다. 목적은 극한의 성능이 아니라 완전한 투명성입니다. 상세한 로그와 시각화 인터페이스를 통해 문서 색인 전체 과정을 분명히 관찰할 수 있습니다. 텍스트 전처리(토큰화와 영어의 “the”나 “of”만큼 흔해 검색 가치가 거의 없는 중국어 불용어 “的”, “了” 제거), 역색인 구축, TF와 IDF 값 계산이 포함됩니다. 역색인은 단어에서 문서로 이어지는 역방향 매핑 표입니다. 정방향 색인이 “문서가 주어졌을 때 그 안의 단어를 나열”한다면 역색인은 반대로 “단어가 주어졌을 때 그 단어를 포함한 모든 문서를 즉시 찾는” 구조입니다. 책 뒤의 용어 색인과 비슷합니다. “TCP”를 찾으면 이 용어가 45쪽, 112쪽, 203쪽에 나온다고 알려 줍니다.
 >
-> 질의할 때는 BM25 계산의 각 단계를 로그로 상세히 보여 줍니다. 다시 “model distillation” 질의를 예로 들겠습니다. 아래 로그는 프로젝트에 포함된 소규모 표본 말뭉치(문서 N=10개)에서 가져왔으므로 앞서 말한 문서 100개 시나리오보다 적중 수가 훨씬 적습니다. 수동으로 다시 계산하기 쉽도록 BM25 매개변수는 k1=1.5, b=0.75, 평균 문서 길이는 avgdl=250단어로 고정했습니다. IDF는 표준식 IDF=ln((N−df+0.5)/(df+0.5))를 사용하며, df는 해당 단어를 포함한 문서 수입니다.
+> 질의할 때는 BM25 계산의 각 단계를 로그로 상세히 보여 줍니다. 다시 “model distillation” 질의를 예로 들겠습니다. 아래 로그는 프로젝트에 포함된 소규모 표본 말뭉치(문서 N=10개)에서 가져왔으므로 앞서 말한 문서 100개 시나리오보다 적중 수가 훨씬 적습니다. 수동으로 다시 계산하기 쉽도록 BM25 매개변수는 k1=1.5, b=0.75, 평균 문서 길이는 avgdl=250단어로 고정했습니다. IDF는 위 BM25의 형태인 IDF=ln((N−df+0.5)/(df+0.5))를 사용하며, df는 해당 단어를 포함한 문서 수입니다.
 >
 > ```text
 > 질의 토큰: ["model", "distillation"]
@@ -472,9 +527,9 @@ $$\text{IDF}(q_i) = \ln\frac{N-\text{DF}(q_i)+0.5}{\text{DF}(q_i)+0.5}$$
 
 **사례 1: 검은 고양이와 흰 고양이 수 세기 문제.** 2장에서는 검은 고양이와 흰 고양이의 수를 세는 예를 통해 “주의는 소프트 검색 메커니즘이므로 통계 정보는 미리 추출해야 한다”는 점을 설명했습니다. 사례 100개를 모두 컨텍스트 창에 넣어도 모델은 정확히 세기 어렵습니다. 지식 베이스 규모에서도 같은 문제가 나타나며, 새로운 장애물까지 더해집니다. 지식 베이스에 독립적인 사례 문서 100개(검은 고양이 90마리, 흰 고양이 10마리, 각 사례는 독립된 텍스트 조각)가 있고 사용자가 “검은 고양이와 흰 고양이의 비율은 얼마인가요?”라고 묻는다고 가정합니다. 첫째, **top-k 절단**이 발생합니다. top-k가 20처럼 작으면 대부분의 사례는 아예 검색되지 않습니다. 둘째, **검색 점수가 고르지 않습니다**. k를 늘려도 사례마다 서술 방식이 달라 점수 차이가 크고 일부는 여전히 빠집니다. 가장 근본적으로는 **문서 간 집계의 불일치**가 있습니다. 통계 질의에는 “모든 문서에서 수를 세기”가 필요하지만 검색의 본질은 “가장 관련 있는 소수 찾기”이므로 내재적인 모순이 생깁니다. 모델은 불완전한 표본(예: 검은 고양이 15마리와 흰 고양이 3마리만 봄)으로 잘못된 결론을 낼 수밖에 없습니다. “고양이 총 100마리: 검은 고양이 90마리(90%), 흰 고양이 10마리(10%)”처럼 미리 생성한 요약을 색인하면 한 번의 검색으로 정확한 정보를 얻습니다.
 
-**사례 2: Xfinity 할인 규칙에 관한 잘못된 사고.** 서로 떨어진 과거 사례가 세 개 있습니다. 퇴역 군인 John은 할인 신청에 성공했고, 의사 Sarah는 할인을 받았으며, 교사 Mike는 자격이 없다는 답변을 받았습니다. 간호사가 문의하면 검색기는 “간호사”와 “의사”의 의미 유사성 때문에 Sarah의 의사 사례를 우선하여 모델이 간호사도 자격이 있다고 잘못 추론합니다. 검색기는 다른 직업에는 자격이 없음을 보여 주는 Mike의 교사 사례를 동시에 불러오지 못합니다. 더구나 “간호사”는 John의 퇴역 군인 사례와 의미 유사성이 낮아 해당 사례는 순위가 낮아지거나 무시될 수 있고, 규칙을 불완전하게 이해하게 됩니다. “Xfinity 할인은 퇴역 군인과 의사에게만 제공되며 다른 직업에는 자격이 없다”는 규칙을 미리 추출해 색인하면 어떤 직업을 묻더라도 한 번의 검색으로 완전한 규칙을 얻습니다.
+**사례 2: Xfinity 할인 자격의 경계 문제.** 이번 지식 베이스는 고객 지원 티켓 아카이브로, 수백 건의 티켓이 각각 실제 처리 결과 하나씩을 기록합니다. 퇴역 군인 John은 심사를 통과했고, 의사 Sarah는 할인을 받았으며, 교사 Mike는 자격이 없다는 답변을 받았습니다. 각 티켓은 개별 사례의 결론만 적을 뿐, 자격 범위 자체를 적어 둔 티켓은 하나도 없습니다. 간호사가 “저도 할인을 받을 수 있나요”라고 물으면 장애물이 여러 겹으로 쌓입니다. 첫째, **최근접 이웃 편향**입니다. “간호사”는 “의사”와 의미가 가장 가까우므로 Sarah의 티켓이 맨 앞에 오고, 모델은 그 흐름대로 간호사도 자격이 있다고 추론합니다. 만약 Mike의 티켓이 우연히 더 앞섰다면 같은 질문이 정반대의 답을 얻었을 것입니다. **답을 정하는 것은 어느 티켓이 질의에 가장 가까운가이지 정책 자체가 아닙니다.** 둘째, **경계 의미의 부재**입니다. 이 장애물은 k를 키워도 해결되지 않습니다. “오직 …에만 해당하며 그 밖의 직업에는 일절 적용되지 않는다”처럼 전칭과 부정을 담은 경계는 어떤 단일 티켓에도 없고 말뭉치 전체의 폐포에만 존재하기 때문입니다. 티켓 아카이브는 애초에 “간호사가 해당되는가”에 답하지 않으며, 몇 건의 개별 사례에서 전칭 규칙을 억지로 귀납하게 하면 그 결론은 처음부터 성립하지 않습니다. 셋째, **완전성 신호의 부재**입니다. 모델은 자신이 규칙 전체를 보았는지 판단할 수 없으므로 되묻지 않고 손에 든 몇 건만으로 자신 있게 답합니다. 해법은 이번에도 색인 단계에 있습니다. 오프라인으로 티켓 아카이브 전체를 통독하되 공식 자격 정책을 기준으로 삼아(검색된 몇 건의 개별 사례에서 외삽하는 것이 아니라 — 그것이야말로 뒤에서 경고할 지식 오염입니다) 규칙 카드 한 장을 정제합니다. “Xfinity 할인은 현역 및 퇴역 군인과 간호사를 포함한 면허 의료 종사자에게 적용되며, 교사 등 다른 직업에는 적용되지 않고, 명시되지 않은 직업은 사람의 확인이 필요하다.” 경계와 예외 처리를 모두 적어 두면 어떤 직업을 묻더라도 한 번의 검색으로 완전한 규칙을 얻습니다. 모델은 더 이상 귀납할 필요 없이 대조하기만 하면 됩니다.
 
-두 사례는 같은 결론을 가리킵니다. **원시 사례나 문서를 처리하지 않고 그대로 지식 베이스에 넣는 순진한 RAG만으로는 턱없이 부족합니다.** 외부 벡터 데이터베이스에 저장한 뒤 검색하여 컨텍스트에 주입하든 긴 컨텍스트에 직접 넣든, 지식 추출과 구조화 전처리가 없으면 모델은 이 정보를 효율적이고 안정적으로 활용할 수 없습니다. 모델의 어텐션 메커니즘은 본질적으로 유사성에 기반한 소프트 검색 시스템이지, 능동적으로 요약하고 일반화하여 지식 계층을 구축하는 사고 엔진이 아닙니다. 따라서 색인 단계에 연산을 투자하여 원시 지식을 능동적으로 추출하고 추상화하며 구조화해야 합니다. “개별 사례 100개”를 통계 요약으로 압축하고 “서로 떨어진 사례 세 개”에서 명시적인 규칙을 정제하는 식입니다.
+두 사례는 같은 결론을 가리킵니다. **원시 사례나 문서를 처리하지 않고 그대로 지식 베이스에 넣는 순진한 RAG만으로는 턱없이 부족합니다.** 외부 벡터 데이터베이스에 저장한 뒤 검색하여 컨텍스트에 주입하든 긴 컨텍스트에 직접 넣든, 지식 추출과 구조화 전처리가 없으면 모델은 이 정보를 효율적이고 안정적으로 활용할 수 없습니다. 모델의 어텐션 메커니즘은 본질적으로 유사성에 기반한 소프트 검색 시스템이지, 능동적으로 요약하고 일반화하여 지식 계층을 구축하는 사고 엔진이 아닙니다. 따라서 색인 단계에 연산을 투자하여 원시 지식을 능동적으로 추출하고 추상화하며 구조화해야 합니다. “개별 사례 100개”를 통계 요약으로 압축하고 “수백 건의 티켓에 흩어진 개별 사례”에서 경계까지 적어 둔 명시적인 규칙을 정제하는 식입니다.
 
 ### 구조화 색인: 정보 검색에서 지식 모델링으로
 

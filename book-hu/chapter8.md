@@ -6,7 +6,7 @@ Egy élesben használt modell egyetlen következtetés után nem változtatja me
 
 Itt egy fontos megkülönböztetést könnyű szem elől téveszteni: **a tapasztalat megőrzése nem ugyanaz, mint a tapasztalatból való tanulás**. Száz trajektória elhelyezése egy hosszú kontextusban vagy vektoros adatbázisban segíthet a modellnek egy eset előhívásában, amikor szüksége van rá, de nem hasonlítja össze automatikusan az eseteket: mely lépések ismétlődnek a sikeres trajektóriákban, mely gyakorlatok működnek csak egy régebbi felülettel, vagy hogy egy siker megalapozott stratégiából fakadt-e, nem pedig környezeti véletlenből. Tanulás csak akkor történik, amikor a rendszer aktívan kiértékeli, összehasonlítja, általánosítja és validálja a bizonyítékokat – nem pedig amikor egy napló a lemezre íródik. A 3. fejezetben tárgyalt felhasználói memória elsősorban azt rögzíti, „milyen a felhasználó és a világ"; a jelen fejezet tapasztalati tanulása ennél tovább megy, rögzítve, „mit kell tenni milyen feltételek mellett". Az előbbi segít az ágensnek többet megjegyezni; az utóbbi segít neki ügyesebbé válni, nem csupán tájékozottabbá.
 
-Miért nem hagyhatjuk, hogy a modell minden egyes feladat után közvetlenül betanítsa magát? Mert a termelési környezetek ritkán biztosítanak tiszta tanulási jeleket. A felhasználói elégedettség nem jelent megfelelőséget, és a tesztek azért lehetnek sikeresek, mert a hibás eseteket törölték. Már egy lokális frissítés is okozhat képességfelejtést, irányelvek sodródását vagy biztonsági romlást. Ha egy futó modell közvetlenül, ellenőrizetlen visszajelzések alapján módosíthatja magát, a hibás tapasztalatok és a Prompt injekciók meggyökeresedhetnek, és a későbbi feladatok során tovább erősödhetnek. Az alapmodellek időszakos betanítása javíthatja az általános képességeket, de nem képes időben befogadni az egyes ágensek által nap mint nap tapasztalt privát szabályokat, eszközváltozásokat és helyi tapasztalatokat.
+Miért ne hagyhatnánk, hogy a modell minden egyes feladat után közvetlenül betanítsa magát? Mert az éles környezetek ritkán biztosítanak tiszta tanulási jeleket. A felhasználói elégedettség nem jelent megfelelőséget; a paraméterek helyi frissítései képességfelejtést, irányelvi sodródást vagy a biztonság romlását is okozhatják. Ha egy futó modell ellenőrizetlen visszajelzések alapján közvetlenül módosíthatja saját paramétereit, a hibás tapasztalatok és a Prompt-injekciók meggyökeresedhetnek, majd a későbbi feladatok során tovább erősödhetnek. Másfelől az alapmodellek időszakos betanítása javíthatja az általános képességeket, de nem képes időben befogadni az egyes ágensek által nap mint nap tapasztalt privát szabályokat, eszközváltozásokat és helyi tapasztalatokat.
 
 Ezért amíg a modellek önállóan még nem képesek folyamatosan és megbízhatóan tanulni, a „tanulást" először a modell köré épített autonóm rendszerként kell megvalósítani: rögzíteni kell a működési bizonyítékokat, ellenőrizni az eredményeket és a folyamatokat, több trajektóriából közös mintákat kell kinyerni, majd eldönteni, hogy frissíteni kell-e a tudást, az utasításokat, a programokat vagy a modellparamétereket. Minden módosításnak először jelölt verzióvá kell válnia, és csak regressziós tesztelés és biztonsági ellenőrzések után változtathatja meg a következő működési kört. Ez nem helyettesíti a modell tanulási képességét; a jelenlegi technikai korlátok között inkább egy mérnöki út az ágensek folyamatos tanulási képességének biztosításához.
 
@@ -25,6 +25,19 @@ Egyes feladatok kimenetele viszonylag könnyen ellenőrizhető. Egy kódoló ág
 Sok más feladatnak nincs egyetlen helyes válasza. Az, hogy az ügyfélszolgálat türelmes-e, hogy megfelelő alternatívákat kínál-e, hogy egy kutatási jelentés azonosítja-e a kulcsfontosságú bizonyítékokat, és hogy a generált szöveg természetes és tömör-e – mind kontextuális ítéletet igényel. A 6. fejezetben bemutatott LLM-as-a-Judge itt használható, de a bíráló nem szabad, hogy csak egy homályos összpontszámot adjon. Hatékonyabb megközelítés, ha előre definiálunk egy "rubrikát", és megköveteljük az ellenőrzőtől, hogy minden tételt pontozzon, idézze a trajektóriából a bizonyítékokat, és kifejezetten jelezze a bizonytalanságot, amikor a bizonyíték nem elegendő.
 
 A 8-2. ábra egy háromrétegű ellenőrzési struktúrát mutat. Az alsó rétegbeli eredmény-ellenőrző a teszteredményeket, adatbázis-állapotokat és eszköz-visszatéréseket olvassa, hogy megválaszolja: „Ténylegesen elkészült a feladat?" A középső rétegbeli folyamat-ellenőrző az üzleti szabályokat, jogosultságokat és műveleti sorrendeket ellenőrzi a kérdésre: „Megengedett módon készült el?" A felső rétegbeli minőség-ellenőrző a rubrika szerint értékeli a nyelvet és a stratégiát a kérdésre: „Megfelelően lett kezelve?" Az alsó szintű mutatóknak erősebben kell támaszkodniuk a kódra és a környezeti alapismeretekre; csak a formalizálható szempontokat szabad nyelvi modellre bízni.
+
+**Háromrétegű trajektória-ellenőrzés:**
+
+```python
+outcome = verify_environment_state(trajectory)
+process = verify_actions_and_permissions(trajectory)
+quality = judge_with_rubric(trajectory, cite_evidence = true)
+
+if not outcome.pass or not process.pass:
+    reject_as_learning_example(outcome, process, quality)
+else:
+    emit_structured_diagnosis(outcome, process, quality)
+```
 
 ![8-2. ábra: Háromrétegű trajektória-ellenőrzés a környezeti eredményektől az LLM Rubrikáig](images/fig8-2.svg)
 
@@ -76,6 +89,19 @@ A 8-2. táblázat tömör összehasonlítást nyújt. A négy módszer nem zárj
 | Prompt és Skill | Nyelvileg kifejezhető ítélkezési elvek és műveleti eljárások | Értelmezhető, szabályozható hatókör | Hajlamos a dagályra, konfliktusra vagy figyelmen kívül hagyásra |
 | Programok és Harness | Determinisztikus eljárások, eszközök és kemény kényszerek | Tesztelhető, stabil végrehajtás, alacsony költség | Magasabb fejlesztési és karbantartási költségek |
 | Modellparaméterek | Magas dimenziós érzékelés, generálási stílus és implicit stratégiák | Erős általánosítás, alacsony következtetési többletterhelés | Magas frissítési és regressziós költségek |
+
+**Tapasztalat–képesség útválasztás:**
+
+```python
+if experience.is_factual and experience.has_sources:
+    target = KNOWLEDGE
+elif experience.can_be_expressed_as_contextual_language_rule:
+    target = PROMPT_OR_SKILL
+elif experience.is_deterministic or experience.is_hard_safety_constraint:
+    target = PROGRAM_OR_HARNESS
+else:
+    target = MODEL_PARAMETERS
+```
 
 ### Tapasztalatok konszolidálása tudásba
 
@@ -270,6 +296,20 @@ Ez a választás a tapasztalatok felhalmozódásával is változhat. Egy újonna
 
 Minden módosításnak először egy jelölt képességet vagy jelölt ágenst kell eredményeznie, nem pedig közvetlenül felülírnia a termelési verziót. A tudásdokumentumokat tesztelni kell, hogy a visszakeresés javítja-e a teljesítményt új feladatokon; a Promptokat és Skill-eket ellenőrizni kell határesetekre és a korábbi feladatokon való regressziókra; a programokat sandbox-okban és visszaállított környezetekben kell tesztelni; a paraméterfrissítéseket pedig értékelni kell felejtésre, biztonságra és eloszláson kívüli teljesítményre. Még az érvényesítés után is fokozatosan kell kiadni az új verziót, és valós forgalom mellett figyelni; ha a kulcsfontosságú mutatók romlanak, a rendszernek automatikusan vissza kell állnia egy ismert biztonságos verzióra.
 
+**Ellenőrzött kiadás és visszagörgetés:**
+
+```python
+candidate = propose_minimal_update(evidence, current_version)
+
+if not verify(candidate, boundary_set): reject(candidate)
+elif not verify(candidate, retention_set): reject(candidate)
+elif not verify(candidate, safety_set): reject(candidate)
+else:
+    canary = deploy_to_small_traffic(candidate)
+    if canary.metrics_regress: rollback(current_version)
+    else: promote(candidate)
+```
+
 Az érvényesítésnek két gyakran összemosott képességet is szét kell választania. A "Harness frissítése" a trajektóriákból értékes, tartós változások előállításának képessége; a "Harness haszna" a feladat ágens azon képessége, hogy megtalálja, aktiválja és helyesen használja ezeket a változásokat később. Egy Skill önmagában helyes lehet, de egy gyengébb feladatmodell nem biztos, hogy betölti a megfelelő helyzetben, vagy nem követi egy hosszú trajektórián keresztül. Bármelyik kudarc miatt a végső pontszám úgy nézhet ki, mintha nem történt volna evolúció. A végpontok közötti teljesítmény önmagában ezért nem diagnosztizálja a frissítőt. A Lin és munkatársai által végzett modellcsere-kísérletek azt jelzik, hogy a két képesség eltérően viszonyul az alapmodell képességéhez[^harness-benefit-2026]. A pontos kapcsolat több feladaton történő érvényesítést igényel, de a kettő elkülönített értékelése széles körben hasznos.
 
 8-3. táblázat: A folyamatos evolúció rétegezett értékelési mérőszámai
@@ -329,6 +369,17 @@ Egy tipikus alvó tanulási ciklus öt lépésből áll:
 3. "Gyűjtés és konszolidáció:" Keressünk új jeleket a nemrég kiértékelt trajektóriákban, egyesítsük a duplikátumokat, jelöljük az ütközéseket és alkalmazási feltételeket, és részesítsük előnyben a lokális javításokat.
 4. "Érvényesítés és jóváhagyás:" Értékeljük a jelölteket átviteli, retenciós és biztonsági készleteken; a magas kockázatú írások várjanak emberi jóváhagyásra.
 5. "Ritkítás és indexelés:" Frissítsük a visszakeresési indexeket, és a hosszú ideje használaton kívüli vagy új bizonyítékok által megcáfolt képességeket jelöljük lejártnak, archiváltnak vagy töröltnek, miközben megőrizzük a származást és a visszaállítási verziókat.
+
+**Alvásidős konszolidáció:**
+
+```python
+while sleep_gate_is_open():
+    batch = load_new_evaluated_trajectories()
+    proposals = consolidate(batch, current_capabilities)
+    for proposal in proposals:
+        validate_canary_and_promote_or_rollback(proposal)
+    prune_stale_entries_but_keep_provenance()
+```
 
 A felhasználói memória a legkézenfekvőbb példa, de meg kell különböztetni a műveleti tapasztalattól. A Claude Code auto memory funkciója minden projekthez fenntart egy `MEMORY.md` indexet és témaspecifikus részletes fájlokat. A munkamenet indításakor csak az index egy korlátozott előtagját tölti be, és a többi tartalmat igény szerint olvassa; amikor az index megközelíti a korlátját, az ágens utasítást kap a részletek egyesítésére vagy máshová helyezésére. Ez megmutatja, hogy még az egyszerű szöveges memória is kapacitáskorlátokat, rétegzett betöltést és aktív szervezést igényel. A jelenleg dokumentált mechanizmus elsősorban a munkamenetek során ír memóriát, és nem szabad egyszerűen egy rögzített éjszakai háttérfeladattal azonosítani[^claude-code-memory].
 

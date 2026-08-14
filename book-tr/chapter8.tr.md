@@ -6,7 +6,7 @@ Bunun nedeni, dağıtılmış bir modelin tek bir çıkarım yüzünden parametr
 
 Burada kolayca karıştırılan bir ayrım var: **yaşananları saklamak, yaşananlardan öğrenmekle aynı şey değildir**. Yüz trajectory'yi uzun bir context'e ya da bir vektör veritabanına koymak, modelin gerektiğinde bir vakayı geri bulmasına yardımcı olabilir, ama vakalar arası karşılaştırmayı kendiliğinden tamamlamaz: hangi adımlar başarılı trajectory'lerde tekrar tekrar ortaya çıkıyor, hangi uygulamalar yalnızca eski sürüm bir arayüzde işe yarıyor, belirli bir başarı doğru stratejiden mi yoksa ortamın tesadüfünden mi geliyor. Öğrenme, sistem "değerlendirme, karşılaştırma, genelleme, doğrulama" işini etkin biçimde tamamladıktan sonra gerçekleşir; log'un diske yazıldığı anda değil. Bölüm 3'teki kullanıcı belleği ağırlıklı olarak "kullanıcı ve dünya nasıldır"ı biriktirir; bu bölümdeki deneyim öğrenmesi ise bir adım öteye geçerek "hangi koşullarda nasıl davranılmalı"yı biriktirir. Birincisi Agent'ın daha çoğunu hatırlamasını sağlar, ikincisiyse onu zeki olmaktan çıkarıp usta hâline getirir.
 
-Peki neden modelin her görevden sonra doğrudan kendini eğitmesine izin verilmiyor? Çünkü üretim ortamları nadiren temiz bir öğrenme sinyali sunar. Kullanıcının memnun olması kurallara uygunluk anlamına gelmez; testlerin geçmesi, başarısız test durumlarının silinmiş olmasından kaynaklanıyor olabilir. Tek bir yerel güncelleme bile yetenek unutmasına, strateji kaymasına veya güvenlik gerilemesine yol açabilir. Çalışmakta olan bir modelin doğrulanmamış geri bildirime dayanarak kendini doğrudan değiştirmesine izin verilirse, hatalı deneyimler ve prompt injection kalıcı hâle gelebilir ve sonraki görevlerde sürekli büyüyebilir. Temel modellerin periyodik eğitimi genel yetenekleri artırabilir, ama her Agent'ın her gün karşılaştığı özel kuralları, araç değişikliklerini ve yerel deneyimi zamanında özümseyemez.
+Peki modelin her görevden sonra doğrudan kendini eğitmesine neden izin vermiyoruz? Çünkü üretim ortamları nadiren temiz öğrenme sinyalleri sağlar. Kullanıcı memnuniyeti kurallara uygunluk anlamına gelmez; yerel parametre güncellemeleri yetenek unutmasına, politika kaymasına veya güvenlikte gerilemeye de yol açabilir. Çalışan bir modelin doğrulanmamış geri bildirime dayanarak kendi parametrelerini doğrudan değiştirmesine izin verilirse, hatalı deneyimler ve prompt injection kalıcı hâle gelip sonraki görevlerde büyümeyi sürdürebilir. Öte yandan temel modellerin periyodik eğitimi genel yetenekleri geliştirebilir, ancak her Agent'ın her gün karşılaştığı özel kuralları, araç değişikliklerini ve yerel deneyimleri zamanında özümseyemez.
 
 Bu nedenle, modelin kendisi henüz güvenilir biçimde sürekli öğrenemiyorken, "öğrenme"nin önce modelin çevresinde otonom bir sistem olarak kurulması gerekir: çalışma kanıtlarını kaydetmek, sonuçları ve süreci doğrulamak, birden çok trajectory'den ortak örüntüleri çıkarmak, ardından bilginin mi, talimatların mı, programların mı yoksa model parametrelerinin mi güncelleneceğine karar vermek. Bütün değişiklikler önce birer aday sürüm hâline gelir; ancak regresyon testlerinden ve güvenlik denetimlerinden geçtikten sonra bir sonraki çalışma turunu değiştirebilir. Bu, modelin öğrenme yeteneğinin yerine geçen bir şey değildir; mevcut teknik koşullarda Agent'a sürekli öğrenme yeteneği kazandırmanın mühendislik yoludur.
 
@@ -25,6 +25,19 @@ Bazı görevlerin sonucunu doğrulamak görece kolaydır. Bir Kodlama Agent'ı t
 Görevlerin daha büyük bölümünün ise tek bir doğru cevabı yoktur. Müşteri hizmetlerinin sabırlı olup olmadığı, kurallara uygun sınırlar içinde bir çözüm sunup sunmadığı, bir araştırma raporunun kilit kanıtı yakalayıp yakalamadığı, üretilen metnin doğal ve derli toplu olup olmadığı — bunların hepsi bağlamla birlikte yargılanmayı gerektirir. Burada Bölüm 6'da tanıtılan LLM-as-a-Judge kullanılabilir, ama hakemden yalnızca muğlak bir toplam puan almak yetmez. Daha etkili yol, değerlendirme ölçeğini (Rubric) önceden tanımlamak; doğrulayıcıdan her maddeye ayrı ayrı puan vermesini, trajectory'den kanıt göstermesini ve kanıt yetersizken kararsızlığını açıkça belirtmesini istemektir.
 
 Şekil 8-2 üç katmanlı bir doğrulama yapısı sunuyor. En alttaki sonuç doğrulayıcısı test sonuçlarını, veritabanı durumunu ve araç dönüşlerini okur ve "iş gerçekten yapıldı mı" sorusunu yanıtlar; ortadaki süreç doğrulayıcısı iş kurallarını, yetkileri ve eylem dizisini denetler ve "izin verilen biçimde mi yapıldı" sorusunu yanıtlar; üstteki kalite doğrulayıcısı Rubric'e dayanarak dili ve stratejiyi değerlendirir ve "uygun biçimde mi yapıldı" sorusunu yanıtlar. Bir metrik ne kadar alt katmandaysa o kadar çok koda ve ortamın gerçek durumuna dayanmalıdır; yalnızca biçimselleştirilmesi zor olan kısımlar dil modeline bırakılır.
+
+**Üç katmanlı trajectory doğrulaması:**
+
+```python
+outcome = verify_environment_state(trajectory)
+process = verify_actions_and_permissions(trajectory)
+quality = judge_with_rubric(trajectory, cite_evidence = true)
+
+if not outcome.pass or not process.pass:
+    reject_as_learning_example(outcome, process, quality)
+else:
+    emit_structured_diagnosis(outcome, process, quality)
+```
 
 ![Şekil 8-2: Ortam Sonucundan LLM Rubric'ine Üç Katmanlı Trajectory Doğrulaması](images/fig8-2.svg)
 
@@ -76,6 +89,19 @@ Tablo 8-2 Dört Sürekli Evrim Biçiminin Uygulanabilirlik Sınırları
 | Prompt ve Skill | Dille ifade edilebilen yargı ilkeleri ve işleyiş kuralları | Yorumlanabilir, etki alanı denetlenebilir | Kolayca şişer, çelişir veya göz ardı edilir |
 | Program ve Harness | Deterministik süreçler, araçlar ve katı kısıtlar | Test edilebilir, yürütmesi kararlı, maliyeti düşük | Geliştirme ve bakım maliyeti görece yüksek |
 | Model parametreleri | Yüksek boyutlu algı, üretim üslubu ve örtük stratejiler | Genelleme gücü yüksek, çıkarım maliyeti düşük | Güncelleme ve regresyon maliyeti yüksek |
+
+**Deneyimden yeteneğe yönlendirme:**
+
+```python
+if experience.is_factual and experience.has_sources:
+    target = KNOWLEDGE
+elif experience.can_be_expressed_as_contextual_language_rule:
+    target = PROMPT_OR_SKILL
+elif experience.is_deterministic or experience.is_hard_safety_constraint:
+    target = PROGRAM_OR_HARNESS
+else:
+    target = MODEL_PARAMETERS
+```
 
 ### Deneyimi Bilgi Olarak Biriktirmek
 
@@ -270,6 +296,20 @@ Bu seçim, deneyim arttıkça da değişebilir. Yeni keşfedilen bir strateji ö
 
 Bütün değişiklikler önce aday bir yetenek ya da aday bir Agent üretir; üretim sürümünün doğrudan üzerine yazmaz. Bilgi dokümanları için retrieval sonrasında yeni görevlerdeki başarımın artıp artmadığı doğrulanmalı; Prompt ve Skill için sınır vakaları ve eski görev regresyonu denetlenmeli; programlar sandbox'ta ve sıfırlanmış ortamlarda test edilmeli; parametre güncellemelerinde ise unutma, güvenlik ve dağılım dışı görevler kontrol edilmelidir. Doğrulama geçildikten sonra bile yeni sürüm kademeli yayımla gerçek trafikte gözlenmelidir; kilit metrikler kötüleştiğinde bilinen güvenli sürüme otomatik olarak geri dönülmelidir.
 
+**Doğrulanmış sürüm ve geri alma:**
+
+```python
+candidate = propose_minimal_update(evidence, current_version)
+
+if not verify(candidate, boundary_set): reject(candidate)
+elif not verify(candidate, retention_set): reject(candidate)
+elif not verify(candidate, safety_set): reject(candidate)
+else:
+    canary = deploy_to_small_traffic(candidate)
+    if canary.metrics_regress: rollback(current_version)
+    else: promote(candidate)
+```
+
 Doğrulama, sık sık birbirine karıştırılan iki yeteneği de ayırt etmelidir. **Harness güncelleme yeteneği** (harness-updating), trajectory'lerden değerli ve kalıcı değişiklikler üretebilmektir; **Harness'ten yararlanma yeteneği** (harness-benefit) ise görev Agent'ının sonraki çalışmalarda bu değişiklikleri bulup etkinleştirmesi ve doğru kullanmasıdır. Bir Skill kendi başına tümüyle doğru yazılmış olabilir, ama görece zayıf bir görev modeli onu uygun senaryoda yüklemiyorsa ya da yükledikten sonra uzun süre ona uyamıyorsa, bunların herhangi biri nihai sonucun "hiç evrim olmamış" gibi görünmesine yol açar. Dolayısıyla güncelleyicinin iyi mi kötü mü olduğu yalnızca uçtan uca puana bakılarak çıkarsanamaz. Lin ve arkadaşlarının model değiştirme deneyleri, bu iki yeteneğin temel model yeteneğiyle ilişkisinin aynı olmadığını gösteriyor[^harness-benefit-2026]; kesin güç ilişkisi hâlâ daha fazla görevde doğrulanmayı gerektiriyor, ama ikisini ayrı ayrı değerlendirmek genel olarak uygulanabilir bir yöntemdir.
 
 Tablo 8-3 Sürekli Evrimin Katmanlı Değerlendirme Metrikleri
@@ -329,6 +369,17 @@ Tipik bir uyku öğrenmesi döngüsü beş adımdan oluşur:
 3. **Toplama ve bütünleştirme**: Yakın zamanda değerlendirilmiş trajectory'lerde yeni sinyaller aramak, yinelenen içerikleri birleştirmek, çatışmaları ve uygulanabilirlik koşullarını işaretlemek, öncelikle yerel yamalar üretmek;
 4. **Doğrulama ve onay**: Adayları aktarım kümesi, saklı küme ve güvenlik kümesi üzerinde değerlendirmek; yüksek riskli yazma işlemlerini insan onayına bırakmak;
 5. **Budama ve indeksleme**: Retrieval indekslerini güncellemek; uzun süredir kullanılmayan veya yeni kanıtlarla çürütülen yetenekleri süresi dolmuş, arşivlenmiş ya da silinmiş olarak işaretlerken kaynağı ve geri alma sürümünü saklamak.
+
+**Boşta kalma sırasında birleştirme:**
+
+```python
+while sleep_gate_is_open():
+    batch = load_new_evaluated_trajectories()
+    proposals = consolidate(batch, current_capabilities)
+    for proposal in proposals:
+        validate_canary_and_promote_or_rollback(proposal)
+    prune_stale_entries_but_keep_provenance()
+```
 
 Kullanıcı belleği bunun en sezgisel örneğidir, ama eylem deneyiminden ayrılmalıdır. Claude Code'un otomatik belleği her proje için bir `MEMORY.md` indeksi ve konulara ayrılmış ayrıntı dosyaları tutar; oturum başlarken yalnızca indeksin sınırlı bir ön ekini yükler, geri kalan içeriği ihtiyaç oldukça okur; indeks üst sınıra yaklaştığında sistem Agent'tan ayrıntıları birleştirmesini ya da başka yere taşımasını ister. Bu, düz metin belleğin de kapasite kısıtına, katmanlı yüklemeye ve etkin düzenlemeye ihtiyaç duyduğunu gösteriyor; ne var ki kamuya açık mevcut mekanizma ağırlıklı olarak oturum içinde sürekli yazmaya dayanıyor ve sabit bir gece arka plan görevine basitçe eşitlenemez[^claude-code-memory].
 

@@ -20,7 +20,7 @@ At its core, a user memory system is an active, continuous learning process aime
 
 Let's understand this process with a concrete example. Suppose a user and an Agent have the following conversation:
 
-```
+```text
 User: Help me book a flight to Tokyo next Friday. I prefer window seats
       and I'm vegetarian, so I'll need a special meal.
 Agent: I'll search for flights to Tokyo for next Friday...
@@ -32,12 +32,27 @@ User: Yes, and use my United MileagePlus number 12345678.
 
 After this conversation ends, the Agent framework calls a dedicated LLM to analyze the dialogue and extract information worth remembering long-term:
 
-```
+```text
 Extracted memories:
 - User prefers window seats (preference)
 - User is vegetarian, needs special meals on flights (dietary restriction)
 - User's United MileagePlus number: 12345678 (loyalty program)
 - User has travel plans to Tokyo (recent activity)
+```
+
+**Memory lifecycle:**
+
+```python
+when answering(user_request):
+    recent_turns = conversation.tail()
+    relevant_memory = memory.search(user_request)
+    answer = LLM(recent_turns + relevant_memory)
+    return answer
+
+after conversation (background job):
+    candidates = extract_memory_candidates(conversation)
+    verified = verify_against_sources_and_policy(candidates, conversation)
+    memory.append_or_update(verified)
 ```
 
 Note several key characteristics of this extraction process:
@@ -127,51 +142,74 @@ It splits memory updates into two phases[^uac]: the **memory phase** (after each
 
 Below is a simplified example. The structuring phase stores the user's passport and trips as typed state:
 
-```python
-from datetime import date
+**Append-only log and checkpoint:**
 
-passport = PassportInfo(
-    number="AB1234567", country="US",
-    expiry_date=date(2025, 2, 18),
-)
-trips = [
-    Trip(destination="Tokyo", departure_date=date(2025, 1, 15),
-         is_international=True),
-    # ... remaining trips
-]
+```python
+append_only_log += extract_facts(conversation)
+
+if checkpoint_due():
+    proposed_state = rebuild_typed_state(append_only_log)
+    if type_check(proposed_state) and source_review(proposed_state):
+        publish_checkpoint(proposed_state)
+    else:
+        keep_previous_checkpoint()
+```
+
+**Typed user state:**
+
+```python
+state = {
+    passport: PassportInfo(
+        number = "AB1234567",
+        country = "US",
+        expiry_date = date(2025, 2, 18),
+    ),
+    trips: [
+        Trip(destination = "Tokyo", departure_date = date(2025, 1, 15),
+             is_international = true),
+        ...
+    ],
+}
 ```
 
 With typed state, three tasks that previously required the LLM to "read the text and do mental arithmetic" now become deterministic code:
 
 First, **statistical aggregation**. "How many times did I go abroad in 2025?"—with text memory, you'd need to recall all trips and count them one by one, and errors become more likely as the number of records grows; with User as Code, it is a single expression, achieving nearly 100% accuracy[^uac]:
 
+**Deterministic aggregation:**
+
 ```python
->>> sum(1 for t in trips if t.is_international and t.departure_date.year == 2025)
-2
+count(
+    trip for trip in state.trips
+    if trip.is_international and year(trip.departure_date) == 2025
+)
+# => 2
 ```
 
 Second, **conflict detection**. By placing "current medications" and "allergy history" side by side, a single function can cross-reference them by drug class, uncovering contradictions scattered across different conversations that would be nearly impossible to automatically associate in text form:
 
+**Conflict detection:**
+
 ```python
 def check_drug_allergy(profile):
-    for med in profile.current_medications:
+    for medication in profile.current_medications:
         for allergy in profile.allergies:
-            if med.drug_class == allergy.drug_class:
-                yield (f"Medication conflict: {med.name} belongs to {med.drug_class} class, "
-                       f"but the patient is severely allergic to {allergy.allergen}")
+            if medication.drug_class == allergy.drug_class:
+                emit_conflict(medication, allergy)
 ```
 
 Third, **constraint enforcement**. The Agent can codify such check functions and trigger them automatically every time the state is updated—without the user needing to speak or the Agent needing to retrieve anything. For example, a passport validity constraint: alert if the passport expires less than 180 days after the departure date of an international trip.
 
+**Constraint enforcement:**
+
 ```python
 def check():
-    for trip in trips:
+    for trip in state.trips:
         if trip.is_international:
-            days = (passport.expiry_date - trip.departure_date).days
+            days = date_difference(state.passport.expiry_date,
+                                   trip.departure_date)
             if days < 180:
-                yield (f"Passport expires on {passport.expiry_date}, only {days} days "
-                       f"between the {trip.destination} departure and passport expiry. "
-                       f"Please renew as soon as possible.")
+                alert("passport expires too soon", trip, days)
 ```
 
 [^uac]: The complete design and evaluation of building user memory as an executable code project can be found in Li, Bojie. *User as Code: Executable Memory for Personalized Agents.* arXiv:2606.16707, 2026.
@@ -294,6 +332,22 @@ The pattern is identical in both examples: **Retrieve relevant fragments → Inj
 
 The quality of the retriever directly determines the effectiveness of RAG—if it can't retrieve relevant fragments, even the strongest LLM has nothing to work with. This section starts with the first step of getting documents into the knowledge base—chunking—then turns to the two main retrieval approaches, dense embeddings (semantic understanding) and sparse embeddings (keyword matching), and how to combine them.
 
+**Hybrid RAG pipeline:**
+
+```python
+offline:
+    chunks = split_documents(documents)
+    dense_index = build_dense_index(chunks)
+    sparse_index = build_sparse_index(chunks)
+
+online(query):
+    dense_hits = dense_search(dense_index, query)
+    sparse_hits = sparse_search(sparse_index, query)
+    candidates = fuse_and_deduplicate(dense_hits, sparse_hits)
+    evidence = rerank(query, candidates)
+    return LLM(query + evidence)
+```
+
 ![Figure 3-5: RAG Query Flow: Retrieval, Augmentation, and Generation](images/fig3-5.svg)
 
 ### Document Chunking
@@ -368,9 +422,15 @@ Here, `TF(t,d)` is the number of times term $t$ appears in document $d$, `DF(t)`
 
 BM25 (Okapi BM25) can be viewed as a classic correction to these two limitations. It retains IDF weighting for rare terms while adding term-frequency saturation and document-length normalization:
 
-$$\text{Score}(Q, D) = \sum_{i} \text{IDF}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
+$$\text{Score}(Q, D) = \sum_{i} \text{IDF}_{\text{BM25}}(q_i) \cdot \frac{\text{TF}(q_i, D)\,(k_1+1)}{\text{TF}(q_i, D) + k_1\left(1 - b + b \cdot \frac{|D|}{\text{avgdl}}\right)}$$
 
-Here, $q_i$ is a query term, $|D|$ is the document length, and $\text{avgdl}$ is the corpus's average document length. As Figure 3-8 shows, $k_1$ controls how quickly term frequency saturates, so repeated occurrences provide diminishing gains; $b$ controls the strength of length normalization, making documents of different lengths more comparable. Consequently, 10 occurrences usually contribute less than twice as much as 5, and the same term frequency receives less weight in a longer document. Specific parameter values and the arithmetic are covered in Experiment 3-5.
+Here, $q_i$ is a query term, $|D|$ is the document length, and $\text{avgdl}$ is the corpus's average document length. $\text{IDF}_{\text{BM25}}$ carries a subscript because it is not the same formula as the $\text{IDF}$ of TF-IDF above—BM25 switches to a more robust variant:
+
+$$\text{IDF}_{\text{BM25}}(t) = \ln\frac{N - \text{DF}(t) + 0.5}{\text{DF}(t) + 0.5}$$
+
+The intuition is unchanged—the rarer the term, the higher its weight—only the way it is measured. The numerator becomes the number of documents *without* the term, $N - \text{DF}(t)$, rather than the corpus size $N$, so the ratio states how many times more documents lack the term than contain it; adding 0.5 to both numerator and denominator smooths the result, keeping the formula defined at the two extremes $\text{DF}(t) = 0$ and $\text{DF}(t) = N$. The price is that a term occurring in more than half the documents ($\text{DF}(t) > N/2$) receives a negative weight, so implementations usually clamp it to a floor. This variant comes from the probabilistic retrieval model and is known in the literature as the Robertson–Spärck Jones weight.
+
+As Figure 3-8 shows, $k_1$ controls how quickly term frequency saturates, so repeated occurrences provide diminishing gains; $b$ controls the strength of length normalization, making documents of different lengths more comparable. Consequently, 10 occurrences usually contribute less than twice as much as 5, and the same term frequency receives less weight in a longer document. Specific parameter values and the arithmetic are covered in Experiment 3-5.
 
 
 ![Figure 3-8: BM25 Scoring Mechanism](images/fig3-8.svg)
@@ -380,7 +440,7 @@ Here, $q_i$ is a query term, $|D|$ is the document length, and $\text{avgdl}$ is
 >
 > To lay bare the inner workings of sparse retrieval, the `sparse-embedding` project implements a BM25-based sparse vector search engine from scratch as a teaching vehicle. Its value lies not in squeezing out performance but in complete transparency. Through rich logging and visualization interfaces, we can clearly observe the entire document indexing process: text preprocessing (tokenization and removal of Chinese stop words like "的" and "了" (function words as common as "the" or "of" in English) that carry almost no retrieval value), building an inverted index, and calculating TF and IDF values. An inverted index is a reverse mapping table from words to documents—a forward index is "given a document, list the words it contains," while an inverted index does the opposite: "given a word, immediately find all documents containing it." It's like the term index at the back of a book: you look up "TCP," and it tells you pages 45, 112, and 203 mention it.
 >
-> During a query, the log details each step of the BM25 calculation. Using the query "model distillation" as an example again—the following log comes from a small sample corpus (N=10 documents) included with the project, so the number of hits is much smaller than the 100-article scenario mentioned earlier. To facilitate manual recalculation, the example fixes BM25 parameters k1=1.5, b=0.75, and average document length avgdl=250 words; IDF uses the standard form IDF=ln((N−df+0.5)/(df+0.5)), where df is the number of documents containing the word:
+> During a query, the log details each step of the BM25 calculation. Using the query "model distillation" as an example again—the following log comes from a small sample corpus (N=10 documents) included with the project, so the number of hits is much smaller than the 100-article scenario mentioned earlier. To facilitate manual recalculation, the example fixes BM25 parameters k1=1.5, b=0.75, and average document length avgdl=250 words; IDF uses the BM25 form given above, IDF=ln((N−df+0.5)/(df+0.5)), where df is the number of documents containing the word:
 >
 > ```
 > Query tokens: ["model", "distillation"]
@@ -455,9 +515,9 @@ A deeper problem is that even if we build a RAG system, simply placing a large n
 
 **Case 1: The Black Cat and White Cat Counting Problem.** In Chapter 2, we used the black cat and white cat counting example to illustrate that "attention is a soft retrieval mechanism, and statistical information needs to be pre-extracted"—even if all 100 cases are loaded into the context window, the model struggles to perform accurate counting. The same problem reappears at the knowledge base scale, compounded by several new obstacles. Suppose the knowledge base has 100 independent case documents (90 black cats, 10 white cats, each an independent text chunk), and the user asks, "What is the ratio of black cats to white cats?" First, **top-k truncation**—with a small top-k value, such as 20, most cases won't be retrieved at all. Second, **uneven retrieval scores**—even with a larger k, individual cases are described differently, their scores vary widely, and some are still missed. Most fundamentally, there is a **mismatch in cross-document aggregation**—statistical questions require "counting across all documents," while the nature of retrieval is "finding the most relevant few," creating an inherent contradiction. The model can only draw incorrect conclusions based on an incomplete sample (e.g., seeing only 15 black cats and 3 white cats). If a pre-generated summary like "Total 100 cats: 90 black cats (90%) and 10 white cats (10%)" is indexed, a single retrieval yields accurate information.
 
-**Case 2: Erroneous Reasoning about Xfinity Discount Rules.** Three isolated historical cases: Veteran John successfully applied for a discount, Doctor Sarah received a discount, Teacher Mike was told he was ineligible. When a nurse inquires, the retriever, due to the semantic similarity between "nurse" and "doctor," prioritizes Sarah's doctor case, and the model incorrectly infers that nurses are also eligible. The retriever fails to simultaneously recall Mike's teacher case (which shows other professions are ineligible). Worse, "nurse" has low semantic similarity to John's veteran case, so that case might rank low and be ignored, leading to an incomplete understanding of the rule. If a pre-extracted rule like "Xfinity discounts are only available to veterans and doctors; other professions are not eligible" is indexed, a single retrieval provides the complete rule regardless of the profession asked about.
+**Case 2: The Boundary Problem in Xfinity Discount Eligibility.** This time the knowledge base is a support ticket archive: a few hundred tickets, each recording one real outcome—Veteran John was approved, Doctor Sarah got the discount, Teacher Mike was told he was ineligible, and so on. Every ticket states the conclusion of one individual case; not one of them states the scope of eligibility itself. When a nurse asks "am I eligible?", several obstacles stack up. First, **nearest-neighbor bias**—"nurse" is semantically closest to "doctor," so Sarah's ticket ranks first and the model duly infers that nurses qualify too; had Mike's ticket happened to rank higher, the same question would have received the opposite answer. **The answer is decided by which ticket sits closest to the query, not by the policy itself.** Second, **missing boundary semantics**—an obstacle that a larger k cannot fix: a statement of the form "only ..., all other professions do not qualify" carries a universal quantifier and a negation, and it lives in no single ticket, only in the closure of the whole corpus. The archive never answers "does a nurse count" in the first place, so forcing the model to induce a universal rule from a handful of individual cases yields a conclusion that was never valid. Third, **missing completeness signals**—the model has no way to tell whether it has seen the whole rule, so it never asks; it simply answers with confidence from the few tickets in hand. The fix again belongs at indexing time: read the entire ticket archive offline and, taking the official eligibility policy as the authority (rather than extrapolating from the handful of retrieved cases—which is precisely the knowledge pollution warned about later), distill a single rule card: "Xfinity discounts apply to active-duty service members and veterans, and to licensed medical professionals including nurses; other professions such as teachers do not qualify; professions not listed require human review." Once the boundary and the fallback are both written down, a single retrieval yields the complete rule no matter which profession is asked about—the model no longer has to induce, only to match.
 
-Both cases point to the same conclusion: **naive RAG—dropping raw cases or documents into the knowledge base unprocessed—is nowhere near enough.** Whether stored in an external vector database and injected into the context via retrieval, or placed directly in a long context, without knowledge extraction and structured preprocessing, the model cannot use this information efficiently and reliably. The model's attention mechanism is fundamentally a similarity-based soft retrieval system, not a thinking engine that actively summarizes, generalizes, and builds knowledge hierarchies. So compute must be invested at the indexing stage to actively extract, abstract, and structure the raw knowledge—compressing "100 individual cases" into a statistical summary, distilling "three isolated cases" into an explicit rule.
+Both cases point to the same conclusion: **naive RAG—dropping raw cases or documents into the knowledge base unprocessed—is nowhere near enough.** Whether stored in an external vector database and injected into the context via retrieval, or placed directly in a long context, without knowledge extraction and structured preprocessing, the model cannot use this information efficiently and reliably. The model's attention mechanism is fundamentally a similarity-based soft retrieval system, not a thinking engine that actively summarizes, generalizes, and builds knowledge hierarchies. So compute must be invested at the indexing stage to actively extract, abstract, and structure the raw knowledge—compressing "100 individual cases" into a statistical summary, distilling "individual cases scattered across hundreds of tickets" into an explicit rule that states its own boundary.
 
 ### Structured Indexing: From Information Retrieval to Knowledge Modeling
 
@@ -501,7 +561,7 @@ Therefore, the recommended strategy in practice is **a layered, complementary de
 
 RAPTOR and GraphRAG represent the academic community's explorations of knowledge organization; [OpenViking](https://github.com/volcengine/OpenViking), open-sourced by ByteDance's Volcano Engine, proposes a third philosophy: the **filesystem paradigm**. It treats context neither as flat vector fragments nor as graph nodes. Instead, it maps all context—memories, resources, skills—into directories and files within a virtual filesystem, each with a unique URI:
 
-```
+```text
 viking://
 ├── resources/          # External knowledge: documents, codebases, web pages
 ├── user/memories/      # User memories: preferences, habits
